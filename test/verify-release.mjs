@@ -7,10 +7,27 @@ import path from 'node:path';
 const url = `https://github.com/liii-Boo/dsh-session-recycle/releases/download/v1.0.0/liii-boo-dsh-session-recycle-1.0.0.tgz?cb=${Date.now()}`;
 const tgz = path.join(os.tmpdir(), `dsr-verify-${Date.now()}.tgz`);
 
-const res = await fetch(url, { headers: { 'cache-control': 'no-cache' } });
-const buf = Buffer.from(await res.arrayBuffer());
-fs.writeFileSync(tgz, buf);
-console.log('下载:', buf.length, '字节', 'HTTP', res.status);
+// 优先用 curl（走系统代理，Node 的 fetch 不走代理时会直连超时）
+const proxy = process.env.HTTPS_PROXY ?? process.env.https_proxy ?? 'http://127.0.0.1:7890';
+let downloaded = false;
+try {
+  execFileSync('curl.exe', [
+    '-sSL', '--fail', '--max-time', '120',
+    '-x', proxy,
+    '-H', 'Cache-Control: no-cache',
+    '-o', tgz, url,
+  ], { stdio: 'pipe' });
+  downloaded = fs.existsSync(tgz) && fs.statSync(tgz).size > 0;
+  console.log('下载(curl, 代理', proxy + '):', fs.statSync(tgz).size, '字节');
+} catch (error) {
+  console.log('curl 失败，改用 fetch:', error?.message ?? error);
+}
+if (!downloaded) {
+  const res = await fetch(url, { headers: { 'cache-control': 'no-cache' } });
+  const buf = Buffer.from(await res.arrayBuffer());
+  fs.writeFileSync(tgz, buf);
+  console.log('下载(fetch):', buf.length, '字节', 'HTTP', res.status);
+}
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsr-verify-'));
 execFileSync('tar', ['-xzf', tgz, '-C', dir]);
