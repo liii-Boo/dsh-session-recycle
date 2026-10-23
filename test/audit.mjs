@@ -35,11 +35,15 @@ for (let i = 1; i < lines.length; i += 1) {
   }
 }
 
-// 4) README 引用的本地图片必须存在
-for (const match of readme.matchAll(/!\[[^\]]*\]\((?!https?:)([^)]+)\)/g)) {
-  const rel = match[1];
+// 4) README 引用的本地图片必须存在（同时检查 Markdown 与 HTML 两种写法）
+const imageRefs = [
+  ...[...readme.matchAll(/!\[[^\]]*\]\((?!https?:)([^)]+)\)/g)].map((m) => m[1]),
+  ...[...readme.matchAll(/<img[^>]+src="(?!https?:)([^"]+)"/g)].map((m) => m[1]),
+];
+for (const rel of imageRefs) {
   if (!exists(rel)) problems.push(`README 引用了不存在的图片：${rel}`);
 }
+if (imageRefs.length > 0) notes.push(`README 引用本地图片 ${imageRefs.length} 张`);
 
 // 5) package.json 关键字段
 for (const key of ['name', 'version', 'license', 'description', 'repository', 'engines']) {

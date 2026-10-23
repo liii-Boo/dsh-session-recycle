@@ -2,7 +2,17 @@
 
 给 DeepSeek Harness 的会话补上删除能力：右键删除进回收站，可还原。
 
-![回收站与确认对话框](https://raw.githubusercontent.com/liii-Boo/dsh-session-recycle/main/docs/dialog.png)
+**侧栏入口**
+
+<img src="https://raw.githubusercontent.com/liii-Boo/dsh-session-recycle/main/docs/sidebar.png" width="300" alt="侧栏入口" />
+
+**会话页签：批量删除与按天数清理**
+
+![会话页签](https://raw.githubusercontent.com/liii-Boo/dsh-session-recycle/main/docs/panel.png)
+
+**「彻底删除」确认**
+
+![确认对话框](https://raw.githubusercontent.com/liii-Boo/dsh-session-recycle/main/docs/dialog.png)
 
 ### 三种安装方式
 

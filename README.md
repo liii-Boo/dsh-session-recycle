@@ -123,11 +123,17 @@ dsh plugin --profile <你的 profile> add https://github.com/liii-Boo/dsh-sessio
 
 ## 截图
 
-**回收站列表与「彻底删除」确认**
+**侧栏入口**（设置里可开关；设置页的入口一直都在）
 
-![回收站与确认对话框](docs/dialog.png)
+<img src="docs/sidebar.png" width="320" alt="侧栏里的会话回收站入口" />
 
-> 侧栏入口、右键菜单的截图待补。
+**「会话」页签：批量删除与按天数清理**
+
+![会话页签](docs/panel.png)
+
+**「彻底删除」确认**
+
+![彻底删除确认](docs/dialog.png)
 
 ## 环境要求
 
