@@ -17,6 +17,7 @@ execFileSync('tar', ['-xzf', tgz, '-C', dir]);
 
 const store = fs.readFileSync(path.join(dir, 'package', 'lib', 'store.mjs'), 'utf8');
 const host = fs.readFileSync(path.join(dir, 'package', 'index.js'), 'utf8');
+const client = fs.readFileSync(path.join(dir, 'package', 'client.js'), 'utf8');
 const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package', 'package.json'), 'utf8'));
 
 const checks = [
@@ -33,6 +34,12 @@ const checks = [
   ['不限空会话必须给天数', host.includes('days === 0')],
   ['批量上限 200', host.includes('const BATCH_LIMIT = 200')],
   ['测试脚本跑两个文件', String(pkg.scripts?.test ?? '').includes('routes.test.mjs')],
+  // 第二轮（Claude 跟进）修复
+  ['标记从宿主服务读', host.includes('readSessionFlags')],
+  ['detach 成功但标记失败时只摘标记', host.includes('stripFlagsFromRegistry')],
+  ['归档集合里的孤儿纳入诊断', store.includes('...registry.archived,')],
+  ['批量分批发送', client.includes('const CHUNK = 25')],
+  ['批量进度提示', client.includes('delete.progress')],
 ];
 
 let bad = 0;
