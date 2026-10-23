@@ -50,6 +50,7 @@ window.__ModuleLoader__.load({
 			"delete.cancel": "取消",
 			"delete.pending": "正在移入回收站…",
 			"delete.progress": "已处理 {done} / {total}",
+			"delete.currentBlocked": "这是当前正在查看的会话。请先切到别的会话再删除它，否则界面会停在已经不存在的会话上。",
 			"delete.failed": "删除失败：{message}",
 			"delete.done": "已移入回收站",
 			"delete.doneMany": "已移入回收站 {n} 个",
@@ -121,6 +122,7 @@ window.__ModuleLoader__.load({
 			"delete.cancel": "Cancel",
 			"delete.pending": "Moving to the recycle bin…",
 			"delete.progress": "{done} / {total} processed",
+			"delete.currentBlocked": "This is the session you are viewing. Switch to another session first — deleting it would leave the view pointing at a session that no longer exists.",
 			"delete.failed": "Delete failed: {message}",
 			"delete.done": "Moved to the recycle bin",
 			"delete.doneMany": "Moved {n} sessions to the recycle bin",
@@ -499,6 +501,35 @@ window.__ModuleLoader__.load({
 		/** 插槽没给 hook 时的空实现：hooks 必须无条件调用，不能按条件跳过。 */
 		const NOOP_HOOK = () => void 0;
 
+		/**
+		 * 判断某个会话是不是「当前主视图正在显示的那个」。
+		 *
+		 * 删掉正在看的会话会让主界面停在已经不存在的会话上（宿主没有删除语义，
+		 * 也就没有相应的“切走”逻辑），所以这种情况直接拦住。
+		 *
+		 * 检测手段按可靠性递减：uiSession 的 current store → 页面上是否出现该 id。
+		 * 拿不准时按「不是当前会话」处理，避免误挡正常删除。
+		 */
+		function isCurrentSession(ctx, sessionId) {
+			try {
+				const uiSession = ctx.get("uiSession");
+				const store = uiSession?.current;
+				const snapshot = typeof store?.getSnapshot === "function"
+					? store.getSnapshot()
+					: (store?.value ?? null);
+				const activeId = snapshot?.key ?? snapshot?.sessionId ?? snapshot?.id;
+				if (typeof activeId === "string" && activeId !== "") return activeId === sessionId;
+			} catch {
+				/* 服务形状变了就退回 DOM 判断 */
+			}
+			try {
+				// 主视图顶部会显示会话 id；侧栏显示的是标题，不会命中
+				return typeof document !== "undefined" && document.body.innerText.includes(sessionId);
+			} catch {
+				return false;
+			}
+		}
+
 		/** 会话行右键菜单：删除会话（进回收站）。 */
 		function RecycleMenuItem(props) {
 			const { sessionId, displayTitle, t } = props;
@@ -511,6 +542,10 @@ window.__ModuleLoader__.load({
 				danger: true,
 				onSelect: () => {
 					closeMenu?.(false);
+					if (isCurrentSession(pluginCtx, sessionId)) {
+						showNotice(t("delete.currentBlocked"));
+						return;
+					}
 					// 用挂到 body 的确认框：菜单容器有 transform + overflow:hidden，
 					// 在它内部渲染浮层会被裁掉。
 					bodyConfirm({
@@ -574,6 +609,14 @@ window.__ModuleLoader__.load({
 
 			const confirm = () => {
 				if (busy) return;
+				// 批量里只要有一个是当前正在看的会话，就整体拦下（避免删完界面卡在空壳上）
+				if (kind === "delete") {
+					const blocked = sessionIds.filter((id) => isCurrentSession(pluginCtx, id));
+					if (blocked.length > 0) {
+						setError(t("delete.currentBlocked"));
+						return;
+					}
+				}
 				setBusy(true);
 				setError(null);
 				void (async () => {
@@ -932,6 +975,9 @@ function RecycleToast() {
 		/** 由 apply() 注入的兜底翻译函数：插槽万一没给 `t` 也不至于白屏报错。 */
 		let fallbackT = (key) => key;
 
+		/** 由 apply() 注入的插件上下文，用于查询「当前会话」。 */
+		let pluginCtx = null;
+
 		/** 设置页容器：把侧栏开关的实时状态喂给面板。 */
 		function SettingsPanel(props = {}) {
 			const visible = React.useSyncExternalStore(subscribeSidebarPref, readSidebarPrefState, readSidebarPrefState);
@@ -957,6 +1003,7 @@ function RecycleToast() {
 				return String(bound).replace(/\{(\w+)\}/g, (match, name) => (params[name] === void 0 ? match : String(params[name])));
 			};
 			fallbackT = t;
+			pluginCtx = ctx;
 
 			ctx.effect(() => {
 				const style = document.createElement("style");
