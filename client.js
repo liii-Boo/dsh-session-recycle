@@ -502,28 +502,53 @@ window.__ModuleLoader__.load({
 		 * 删掉「当前正在看的会话」后，把主视图切走。
 		 *
 		 * 宿主没有删除语义，删完没有任何组件负责导航，页面会停在已不存在的会话上。
-		 * 这里主动调宿主「新会话」用的同一个接口：`uiWorkspace.startSession(workspaceId)`。
+		 * 三层兜底，任一成功即返回 true：
+		 *   1. `uiWorkspace.startSession(workspaceId)`（宿主「新会话」按钮用的就是它）
+		 *   2. `uiWorkspace.openWorkspace(workspaceId)`
+		 *   3. 直接点界面上那个「新会话」按钮
 		 *
 		 * @param wasCurrent - 删除前该会话是否为主视图（删完就查不到了，必须提前记下）
 		 * @param workspaceId - 宿主返回的工作区 id
 		 */
 		function leaveDeletedView(ctx, wasCurrent, workspaceId) {
 			if (wasCurrent !== true) return false;
-			const uiWorkspace = ctx?.get?.('uiWorkspace');
-			if (uiWorkspace === void 0) return false;
+
+			const uiWorkspace = workspaceUi ?? ctx?.get?.('uiWorkspace');
+			const hasWorkspaceId = typeof workspaceId === 'string' && workspaceId !== '';
+
+			if (uiWorkspace !== void 0) {
+				if (hasWorkspaceId && typeof uiWorkspace.startSession === 'function') {
+					try {
+						uiWorkspace.startSession(workspaceId);
+						return true;
+					} catch (error) {
+						console.warn(`${PKG}: startSession 失败，改用 openWorkspace`, error);
+					}
+				}
+				if (hasWorkspaceId && typeof uiWorkspace.openWorkspace === 'function') {
+					try {
+						uiWorkspace.openWorkspace(workspaceId);
+						return true;
+					} catch (error) {
+						console.warn(`${PKG}: openWorkspace 失败，改用点击「新会话」`, error);
+					}
+				}
+			}
+
+			// 最后兜底：点界面上的「新会话」按钮（它自己会处理好工作区与导航）
 			try {
-				if (typeof workspaceId === 'string' && workspaceId !== '' && typeof uiWorkspace.startSession === 'function') {
-					uiWorkspace.startSession(workspaceId);
+				const labels = ['新会话', 'New session', 'New chat', '新对话'];
+				const target = [...document.querySelectorAll('button')].find((button) => {
+					const aria = button.getAttribute('aria-label') ?? '';
+					const text = (button.textContent ?? '').trim();
+					return labels.some((label) => aria.includes(label) || text === label);
+				});
+				if (target !== void 0) {
+					target.click();
 					return true;
 				}
-				if (typeof workspaceId === 'string' && workspaceId !== '' && typeof uiWorkspace.openWorkspace === 'function') {
-					uiWorkspace.openWorkspace(workspaceId);
-					return true;
-				}
-				return false;
 			} catch (error) {
-				console.warn(`${PKG}: 删除后切走视图失败`, error);
-				return false;
+				console.warn(`${PKG}: 点击「新会话」失败`, error);
 			}
 			return false;
 		}
@@ -1006,6 +1031,9 @@ function RecycleToast() {
 		/** 由 apply() 注入的插件上下文，用于查询「当前会话」。 */
 		let pluginCtx = null;
 
+		/** 宿主的工作区 UI 服务（`uiWorkspace`）：删除后用它切换视图。 */
+		let workspaceUi = null;
+
 		/** 设置页容器：把侧栏开关的实时状态喂给面板。 */
 		function SettingsPanel(props = {}) {
 			const visible = React.useSyncExternalStore(subscribeSidebarPref, readSidebarPrefState, readSidebarPrefState);
@@ -1032,6 +1060,10 @@ function RecycleToast() {
 			};
 			fallbackT = t;
 			pluginCtx = ctx;
+			// 用 inject 拿服务：直接 ctx.get 在部分挂载顺序下取不到
+			ctx.inject(["uiWorkspace"], (scoped) => {
+				workspaceUi = scoped.uiWorkspace;
+			});
 
 			ctx.effect(() => {
 				const style = document.createElement("style");

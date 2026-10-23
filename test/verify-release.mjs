@@ -60,6 +60,8 @@ const checks = [
   // 第三轮：当前会话保护
   ['识别当前会话', client.includes('function isCurrentSession')],
   ['删完自动切走视图', client.includes('function leaveDeletedView')],
+  ['切换有多层兜底', client.includes('querySelectorAll')],
+  ['通过 inject 取 uiWorkspace', client.includes('ctx.inject(["uiWorkspace"]')],
   ['删除返回 workspaceId', host.includes('workspaceId: await resolveWorkspaceId')],
   ['切换失败有提示', client.includes('delete.stuckHint')],
 ];

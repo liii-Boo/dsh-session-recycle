@@ -322,7 +322,9 @@ async function resolveWorkspaceId(ctx, cwd) {
   const file = readRegistry();
   const needle = cwd.toLowerCase();
   const hit = file.workspaces.find((workspace) => typeof workspace.path === 'string' && workspace.path.toLowerCase() === needle);
-  return hit?.id ?? null;
+  if (hit !== undefined) return hit.id;
+  // 兜底：只有一个工作区时，客户端切换视图用它就够了
+  return file.workspaces.length === 1 ? file.workspaces[0].id : null;
 }
 
 /** 删除后清理登记：服务优先，文件层兜底。每步结果都收进返回值，不再吞掉。 */
