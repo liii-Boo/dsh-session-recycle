@@ -50,7 +50,9 @@
     "manifestVersion": 1
   },
   "scripts": {
-    "test": "node --test test/recycle.test.mjs"
+    "test": "node --test test/recycle.test.mjs test/routes.test.mjs",
+    "audit": "node test/audit.mjs . && node test/audit-hooks.mjs . && node test/lint-package.mjs .",
+    "verify:release": "node test/verify-release.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.5"

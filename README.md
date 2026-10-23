@@ -177,16 +177,19 @@ DSH 的子代理会话在磁盘上的目录名是**裸 uuid**（如 `8445b302-d5
 - 回收站不设上限、不自动过期，占多少磁盘由你决定
 - 还原不重建会话的 runtime，界面上要切一次工作区或按 F5 才看得到
 - 只处理本机 `DSH_HOME`，不涉及远程主机
-- 批量删除一次上限 500 条（只防手滑）
+- 批量删除一次上限 **200 条**（每条要做停手与缓存复查，再多会让单次请求太慢）
 
 ## 开发
 
 ```powershell
-npm test                       # 16 个离线单测：回收站往返、标记还原、孤儿清理、路径白名单、冲突处理…
-node test/lint-package.mjs .   # 发布前一致性自检（包名/patch/入口/LICENSE 等 12 项）
+npm test                     # 33 个测试：存储层 26 + 路由层 7
+npm run audit                # 结构自审 + hooks 顺序 + 发布一致性（12 项）
+npm run verify:release       # 下载线上 Release 附件，校验修复是否在内
+node test/lint-client.mjs client.js   # 检查 i18n 键完整性（需带文件路径）
 ```
 
-单测在临时目录里造一套假的 `~/.dsh`（通过 `DSH_HOME` 切换），不需要启动 DSH。
+测试在临时目录里造一套假的 `~/.dsh`（通过 `DSH_HOME` 切换），不需要启动 DSH；
+路由层测试会伪造 cordis 上下文与 HTTP 请求，真实驱动 `delete → state → purge`。
 
 ## License
 

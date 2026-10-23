@@ -62,6 +62,7 @@ window.__ModuleLoader__.load({
 			"sessions.emptyOnly": "只看 0 轮的空会话",
 			"sessions.preview": "选中符合条件的",
 			"sessions.matched": "命中 {n} 个",
+			"sessions.needDays": "不勾「只看 0 轮的空会话」时，天数必须大于 0，否则会把所有会话都选中。",
 			"sessions.none": "没有符合条件的会话。",
 			"sessions.turns": "{n} 轮",
 			"sessions.turnsUnknown": "轮数未知",
@@ -131,6 +132,7 @@ window.__ModuleLoader__.load({
 			"sessions.emptyOnly": "Only empty sessions (0 turns)",
 			"sessions.preview": "Select matching",
 			"sessions.matched": "{n} matched",
+			"sessions.needDays": "With “only empty sessions” unchecked, the day count must be greater than 0 — otherwise every session would be selected.",
 			"sessions.none": "No session matches.",
 			"sessions.turns": "{n} turns",
 			"sessions.turnsUnknown": "turns unknown",
@@ -737,10 +739,16 @@ function RecycleToast() {
 				});
 			};
 			const selectMatching = () => {
+				// 不勾「只看空会话」又给 0 天 = 全选，容易误删；先在客户端拦下来
+				const dayCount = Number(days);
+				if (!emptyOnly && !(dayCount > 0)) {
+					setError(t("sessions.needDays"));
+					return;
+				}
 				setBusy(true);
 				void (async () => {
 					try {
-						const body = await call("/idle-candidates", { days: Number(days) || 0, emptyOnly });
+						const body = await call("/idle-candidates", { days: Number.isFinite(dayCount) ? Math.max(0, dayCount) : 0, emptyOnly });
 						const candidates = body.candidates ?? [];
 						// 用函数式更新：请求期间用户可能又勾/取消了几条，不能拿点击时的快照覆盖掉
 						setSelected((previous) => {

@@ -205,3 +205,20 @@ test('非法 sessionId 与 entry 被拒绝', async () => {
   assert.equal(bad2.payload.ok, false);
   assert.equal(bad2.payload.code, 'invalid');
 });
+
+test('idle-candidates：不限空会话且天数为 0 时拒绝（避免一次全选）', async () => {
+  fixture();
+  const routes = await boot();
+
+  const rejected = await call(routes, '/idle-candidates', { days: 0, emptyOnly: false });
+  assert.equal(rejected.payload.ok, false);
+  assert.equal(rejected.payload.code, 'invalid');
+
+  // 只看空会话时 0 天是合法用法
+  const allowed = await call(routes, '/idle-candidates', { days: 0, emptyOnly: true });
+  assert.equal(allowed.payload.ok, true);
+
+  // 给了天数就允许
+  const withDays = await call(routes, '/idle-candidates', { days: 7, emptyOnly: false });
+  assert.equal(withDays.payload.ok, true);
+});

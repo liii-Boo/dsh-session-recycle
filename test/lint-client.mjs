@@ -1,7 +1,12 @@
 // 一次性自检：i18n 键是否齐全、有没有残留乱码
 import fs from 'node:fs';
 
-const file = process.argv[2];
+const targetFile = process.argv[2];
+if (targetFile === undefined) {
+  console.error('用法: node test/lint-client.mjs <client.js 路径>');
+  process.exit(2);
+}
+const file = targetFile;
 const s = fs.readFileSync(file, 'utf8');
 
 const zhStart = s.indexOf('const zh = {');

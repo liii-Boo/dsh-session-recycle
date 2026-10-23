@@ -537,3 +537,20 @@ test('轮数为 0 的空会话仍会被选中', async () => {
   const candidates = idleCandidates(0, true);
   assert.equal(candidates.some((item) => item.id === MAIN), true);
 });
+
+test('stripRegistry:false 时不写 workspace.json（避免覆盖宿主的并发修改）', async () => {
+  const home = fixture();
+  const before = fs.readFileSync(path.join(home, 'storages', 'workspace.json'), 'utf8');
+
+  const removed = await moveToTrash(MAIN, { title: 'x', stripRegistry: false });
+  assert.equal(removed.ok, true);
+  assert.equal(removed.stripped, null, '不应执行文件层摘除');
+
+  const after = fs.readFileSync(path.join(home, 'storages', 'workspace.json'), 'utf8');
+  assert.equal(after, before, 'workspace.json 必须保持原样');
+
+  // 而默认行为仍然会摘除（离线/服务不可用时依赖它）
+  const second = await moveToTrash(ARCHIVED, { title: 'y' });
+  assert.equal(second.ok, true);
+  assert.equal(typeof second.stripped, 'boolean');
+});

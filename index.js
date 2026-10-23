@@ -55,8 +55,8 @@ const SESSION_ID_RE = /^(?!.*\.\.)[A-Za-z0-9._~-]{6,200}$/;
 const QUIESCE_STEP_MS = 100;
 const QUIESCE_MAX_STEPS = 40;
 
-/** 单次批量删除的上限：只防手滑传进来一个巨大数组，不限制正常使用。 */
-const BATCH_LIMIT = 500;
+/** 单次批量删除的上限：只防手滑传进来一个巨大数组，也避免单次请求跑太久。 */
+const BATCH_LIMIT = 200;
 
 /** 请求体上限与读取超时。 */
 const BODY_LIMIT = 1_000_000;
@@ -296,10 +296,15 @@ async function forget(ctx, sessionId) {
       /* 单步失败不影响其余，最终由 warnings 表达 */
     }
   }
-  try {
-    result.stripped = stripFromRegistry([sessionId]);
-  } catch {
-    result.stripped = false;
+  // 文件层摘除只在服务不可用或服务调用失败时做兜底：
+  // 注册表以内存为权威，插件直接读-改-写会覆盖宿主此刻的其它改动。
+  const serviceDetached = result.detached === true;
+  if (!serviceDetached) {
+    try {
+      result.stripped = stripFromRegistry([sessionId]);
+    } catch {
+      result.stripped = false;
+    }
   }
   try {
     ctx.emit('api-session/removed', sessionId);
@@ -418,15 +423,19 @@ function registerRoutes(webServer, fiber, ctx) {
     }
     const meta = readProjMeta(sessionId);
     const quiesced = await quiesce(ctx, sessionId);
+    const hasRegistry = ctx.get('workspaceRegistry') !== void 0;
     const result = await moveToTrash(sessionId, {
       title: meta.title,
       cwd: meta.cwd,
       archived: registry.archived.has(sessionId),
       pinned: registry.pinned.has(sessionId),
+      // 宿主在线时交给 forget() 走服务摘除，避免文件层写入覆盖宿主的并发修改
+      stripRegistry: !hasRegistry,
     });
     if (result.ok !== true) return { ...result, quiesced: quiesced.notes };
 
-    const swept = await sweepReappearedCache(result.entry, sessionId);
+    // 没 live 过的会话不会有 dispose 回写，复查一次就够
+    const swept = await sweepReappearedCache(result.entry, sessionId, quiesced.live === true ? 3 : 1);
     const forgotten = await forget(ctx, sessionId);
 
     const warnings = [];
@@ -456,6 +465,7 @@ function registerRoutes(webServer, fiber, ctx) {
     if (ids.length > BATCH_LIMIT) return { ok: false, code: 'too-many', error: `一次最多 ${BATCH_LIMIT} 个` };
 
     const registry = readRegistry();
+    const hasRegistry = ctx.get('workspaceRegistry') !== void 0;
     const results = [];
     const warnings = [];
     for (const sessionId of ids) {
@@ -466,9 +476,11 @@ function registerRoutes(webServer, fiber, ctx) {
         cwd: meta.cwd,
         archived: registry.archived.has(sessionId),
         pinned: registry.pinned.has(sessionId),
+        stripRegistry: !hasRegistry,
       });
       if (result.ok === true) {
-        await sweepReappearedCache(result.entry, sessionId);
+        // 批量场景下每条都要等：非 live 的会话只复查一轮，避免几百条时请求超时
+        await sweepReappearedCache(result.entry, sessionId, quiesced.live === true ? 3 : 1);
         const forgotten = await forget(ctx, sessionId);
         if (forgotten.detached !== true && forgotten.stripped !== true) {
           warnings.push(`${sessionId}：登记表未同步移除`);
@@ -544,8 +556,13 @@ function registerRoutes(webServer, fiber, ctx) {
   /** 闲置候选：按天数 + 是否只看空会话，返回可批量删的 id 列表。 */
   route('/idle-candidates', postRoute(async (body) => {
     const days = Number(body.days);
+    const emptyOnly = body.emptyOnly !== false;
     if (!Number.isFinite(days) || days < 0) return { ok: false, code: 'invalid', error: 'days 必须是非负数' };
-    return { ok: true, candidates: idleCandidates(days, body.emptyOnly !== false) };
+    // 不限空会话又给 0 天，等于「把所有会话都选中」——太容易误点，直接拒绝
+    if (!emptyOnly && days === 0) {
+      return { ok: false, code: 'invalid', error: '不限空会话时必须填一个大于 0 的天数' };
+    }
+    return { ok: true, candidates: idleCandidates(days, emptyOnly) };
   }));
 
   /** 回收站条目（面板刷新用）。 */

@@ -2,7 +2,12 @@
 // 这类损坏会让整个模块在浏览器里抛语法错误，表现为"点击没反应"。
 import fs from 'node:fs';
 
-const file = process.argv[2];
+const targetFile = process.argv[2];
+if (targetFile === undefined) {
+  console.error('用法: node test/check-encoding.mjs <client.js 路径>');
+  process.exit(2);
+}
+const file = targetFile;
 const buf = fs.readFileSync(file);
 
 // 1) 能否按 UTF-8 无损解码
