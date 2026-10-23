@@ -1,0 +1,7 @@
+﻿fix: 去掉重复提示条，清空回收站失败时返回可读错误
+
+- 面板内绿色提示条与 Toast 同时出现，删掉前者只留 Toast
+- emptyTrash 部分失败时补 code/error，客户端不再显示成 HTTP 200
+- PUBLISHING.md 重写：记录 git 路径、代理与 openssl 配置、发版流程
+- README 的 git 安装方式注明需要本机有 git
+- 新增 audit.mjs / audit-hooks.mjs 自审脚本

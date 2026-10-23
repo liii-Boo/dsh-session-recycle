@@ -201,7 +201,6 @@ window.__ModuleLoader__.load({
 .dsr-dialog-p { font-size:13px; line-height:1.6; opacity:.7; }
 .dsr-dialog-target { font-size:12px; line-height:1.5; opacity:.55; word-break:break-all; }
 .dsr-dialog-foot { display:flex; justify-content:flex-end; gap:8px; margin-top:8px; }
-.dsr-banner { padding:8px 12px; border-radius:8px; font-size:12.5px; background:color-mix(in srgb, #2f9e63 14%, transparent); border:1px solid color-mix(in srgb, #2f9e63 35%, transparent); }
 .dsr-btn { padding:6px 14px; border-radius:8px; border:1px solid var(--dsh-color-border,#d8dbe2); background:transparent; color:inherit; font:inherit; cursor:pointer; }
 .dsr-btn:hover:not(:disabled) { background:color-mix(in srgb, currentColor 8%, transparent); }
 .dsr-btn:disabled { opacity:.5; cursor:default; }
@@ -669,8 +668,6 @@ function RecycleToast() {
 			const [confirmRequest, setConfirmRequest] = React.useState(null);
 			const openConfirm = React.useCallback((request) => setConfirmRequest(request), []);
 			const closeConfirm = React.useCallback(() => setConfirmRequest(null), []);
-			// 操作结果提示也放在面板内：Toast 走 shell.overlay，在 Desktop 上同样挂不出来
-			const noticeInfo = React.useSyncExternalStore(subscribeNotice, readNotice, readNotice);
 
 
 			/** 请求代次：旧响应晚到时直接丢弃，否则会把刚删掉的会话又画回来。 */
@@ -871,9 +868,6 @@ function RecycleToast() {
 
 			return h("div", { className: "dsr-panel" },
 				sidebarCard,
-				// 确认层与提示条都渲染在面板内部：shell.overlay 在 Desktop 上挂不出来，
-				// 浮层又会被侧栏的 transform/overflow 裁掉。
-				noticeInfo !== null && h("div", { className: "dsr-banner", role: "status" }, noticeInfo.text),
 				h("div", { className: "dsr-tabs" },
 					h("button", { className: "dsr-tab", "data-active": String(tab === "sessions"), onClick: () => setTab("sessions") },
 						`${t("tab.sessions")} (${sessions.length})`),

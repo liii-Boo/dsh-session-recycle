@@ -100,7 +100,7 @@ dsh plugin --profile <你的 profile> add @liii-boo/dsh-session-recycle
 dsh plugin --profile <你的 profile> add <tgz 的绝对路径>
 ```
 
-**直接用 git 装**：
+**直接用 git 装**（需要本机装有 git）：
 
 ```powershell
 dsh plugin --profile <你的 profile> add https://github.com/liii-Boo/dsh-session-recycle

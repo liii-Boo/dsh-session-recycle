@@ -1,79 +1,80 @@
-# 发布清单（GitHub + npm）
+# 发布手记（维护者用）
 
-这份文件不进 npm 包（`files` 白名单里没有它），只作为仓库内的发布手记。
+这份文件不进 npm 包，只是仓库内的备忘。
 
-## 0. 前提：本机没有 git
+## 当前状态
 
-`git` 不在 PATH 上（`git ls-remote` 报 `'git' 不是内部或外部命令`）。三条路选一条：
+| 项 | 值 |
+|---|---|
+| 仓库 | https://github.com/liii-Boo/dsh-session-recycle |
+| 版本 | 1.0.0（tag `v1.0.0`） |
+| Release | 已发布，附件 `liii-boo-dsh-session-recycle-1.0.0.tgz` |
+| npm | **未发布**（`liii-Boo` 还没有 npm 账号，注册页当时打不开） |
 
-| 方案 | 命令 | 说明 |
-|---|---|---|
-| A. 装 Git（推荐） | `winget install --id Git.Git -e` | 装完重开终端，`git --version` 有输出即可 |
-| B. GitHub Desktop | 图形界面 Add local repository | 不用命令行，但要先装 app |
-| C. 网页上传 | 仓库页 → Add file → Upload files | 最省事，适合只发一次；后续改版麻烦 |
+## 这台机器上的 git 配置
 
-## 1. 本地准备（提交前）
+git 装在 `D:\Git\cmd\git.exe`（不在 PATH 里，调用要写全路径）。
+仓库内已配置（只作用于这个仓库，没动全局）：
+
+```
+http.proxy      = http://127.0.0.1:7890
+https.proxy     = http://127.0.0.1:7890
+http.sslBackend = openssl
+```
+
+前两条是因为系统代理只对浏览器生效、git 直连 GitHub 会超时；
+第三条是因为走代理时 schannel 握手失败，换成 openssl 才能通。
+**如果代理换了端口，改这两行即可。**
+
+提交身份只写在本仓库：`liii-Boo <liii-Boo@users.noreply.github.com>`。
+
+## 发版流程
 
 ```powershell
-$d = "C:\Users\li\Documents\deepseek-harness\default-workspace\plugins\@liii-boo/dsh-session-recycle"
+$git = "D:\Git\cmd\git.exe"
+$d   = "C:\Users\li\Documents\deepseek-harness\default-workspace\plugins\dsh-session-recycle"
 cd $d
-npm test                      # 必须 8/8 通过
-npm pack --dry-run            # 确认 7 个文件、含 LICENSE
-node --check client.js        # 浏览器半边语法
-node -e "import('./index.js').then(m=>console.log(Object.keys(m)))"   # 宿主半边可载入
+
+# 1. 全量验证
+node --test test/recycle.test.mjs test/routes.test.mjs   # 期望 28 通过
+node test/audit.mjs .                                    # 结构自审
+node test/audit-hooks.mjs .                              # hooks 顺序
+node --check client.js
+node --check lib/store.mjs
+
+# 2. 提交并推送
+& $git add -A
+& $git commit -m "..."        # 中文多行建议写文件后 git commit -F，避免被当成路径
+& $git push origin main
+
+# 3. 移动 tag（对外仍是 1.0.0 这种单版本发布时）
+& $git tag -d v1.0.0
+& $git tag -a v1.0.0 -m "1.0.0"
+& $git push -f origin v1.0.0
+
+# 4. 打包并更新 Release 附件
+Get-ChildItem *.tgz | Remove-Item -Force
+npm pack
+node scripts/release-update.mjs <token> "liii-Boo/dsh-session-recycle" "v1.0.0" "<tgz>" "scripts/release-body.md"
 ```
 
-`.gitignore` 已排除 `node_modules/`、`*.tgz`、日志。
-
-## 2. 建仓库并推送
-
-仓库名建议与包名一致：`@liii-boo/dsh-session-recycle`。
+token 可以从 git 凭证里取，不必手抄：
 
 ```powershell
-cd $d
-git init -b main
-git add -A
-git commit -m "feat: 会话回收站插件 v0.2.2"
-git remote add origin https://github.com/liii-Boo/@liii-boo/dsh-session-recycle.git
-git push -u origin main
+$req  = "protocol=https`nhost=github.com`n`n"
+$resp = $req | & $git credential fill 2>$null
+$tok  = ($resp | Where-Object { $_ -match '^password=' }) -replace '^password=',''
 ```
 
-推送后确认：仓库首页能看到 `README.md` 渲染、右侧 License 显示 MIT。
+## 以后要发 npm
 
-## 3. 打 Release（附 tgz，别人不用 npm 也能装）
+1. 打开 https://www.npmjs.com/signup 注册（用户名建议 `liii-Boo`）
+2. 邮箱验证
+3. `npm login`，然后 `npm publish`（`publishConfig.access = public` 已配好）
 
-```powershell
-cd $d
-npm pack                       # 产出 @liii-boo/dsh-session-recycle-0.2.2.tgz
-```
+发布前的自检：`node test/lint-package.mjs .`（12 项，全过才能发）。
 
-GitHub → Releases → Draft a new release → tag `v0.2.2` → 上传 tgz → 发布。
-安装方式写进 Release 说明：
+## 注意
 
-```powershell
-# 从 tgz 安装
-dsh plugin --profile <profile> add <tgz 的绝对路径>
-```
-
-## 4. 发 npm（可选，但只有发了 npm 才能 `add @liii-boo/dsh-session-recycle`）
-
-```powershell
-npm login                      # 需要 npm 账号
-npm publish                    # package.json 里 publishConfig.access = public
-```
-
-注意点：
-
-- 包名 `@liii-boo/dsh-session-recycle` 若已被占用，`npm publish` 会报 403；先用 `npm view @liii-boo/dsh-session-recycle version` 探一下。
-- 桌面版 profile 由应用独占，`dsh plugin --profile desktop add` 会被拒绝，发布说明里要写清"桌面版请用插件页安装"。
-
-## 5. 让别人搜得到（可选）
-
-- 给 `awesome-dsh-plugin` 提 PR 加一行；
-- 装过 `dshmarket`（插件市场）的 profile 里，市场索引可以直接收录。
-
-## 6. 发布前必须写进 README 的话
-
-- 这是社区插件，不是 DeepSeek 官方产品；
-- 删除 = 移入 `~/.dsh/trash/`，**不自动过期**，`彻底删除`/`清空` 才真正释放磁盘；
-- 备份提醒：插件直接操作 `~/.dsh/sessions`、`~/.dsh/storages/workspace.json`，第一次用前建议整目录备份一次。
+- 修改 `package.json` 的 `name` 时，`cordis.patch.yml` 里的 `name` 和 `client.js` 的模块 id 必须同步改，否则插件加载不了（`test/lint-package.mjs` 会检查这一点）。
+- `desktop` profile 由 Electron 独占，命令行 `dsh plugin --profile desktop add` 一定会被拒绝，桌面用户请在插件页安装。
