@@ -165,6 +165,7 @@ test('完整链路：delete -> state 里进回收站 -> purge -> 文件真的没
   assert.equal(del.statusCode, 200, JSON.stringify(del.payload));
   assert.equal(del.payload.ok, true);
   const entry = del.payload.entry;
+  assert.equal(del.payload.workspaceId, 'ws-1', '删除应返回所属工作区 id，供界面切换');
   assert.equal(fs.existsSync(path.join(home, 'sessions', SLUG, MAIN)), false);
 
   const listed = await call(routes, '/state', {});

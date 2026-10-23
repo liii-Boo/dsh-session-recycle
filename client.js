@@ -50,7 +50,7 @@ window.__ModuleLoader__.load({
 			"delete.cancel": "取消",
 			"delete.pending": "正在移入回收站…",
 			"delete.progress": "已处理 {done} / {total}",
-			"delete.currentBlocked": "这是当前正在查看的会话。请先切到别的会话再删除它，否则界面会停在已经不存在的会话上。",
+			"delete.stuckHint": "已删除。视图没能自动切换，请手动点一下别的会话。",
 			"delete.failed": "删除失败：{message}",
 			"delete.done": "已移入回收站",
 			"delete.doneMany": "已移入回收站 {n} 个",
@@ -122,7 +122,7 @@ window.__ModuleLoader__.load({
 			"delete.cancel": "Cancel",
 			"delete.pending": "Moving to the recycle bin…",
 			"delete.progress": "{done} / {total} processed",
-			"delete.currentBlocked": "This is the session you are viewing. Switch to another session first — deleting it would leave the view pointing at a session that no longer exists.",
+			"delete.stuckHint": "Deleted. The view could not switch automatically — pick another session manually.",
 			"delete.failed": "Delete failed: {message}",
 			"delete.done": "Moved to the recycle bin",
 			"delete.doneMany": "Moved {n} sessions to the recycle bin",
@@ -498,6 +498,36 @@ window.__ModuleLoader__.load({
 
 		// ── 右键菜单项 ──────────────────────────────────────────────────────
 
+		/**
+		 * 删掉「当前正在看的会话」后，把主视图切走。
+		 *
+		 * 宿主没有删除语义，删完没有任何组件负责导航，页面会停在已不存在的会话上。
+		 * 这里主动调宿主「新会话」用的同一个接口：`uiWorkspace.startSession(workspaceId)`。
+		 *
+		 * @param wasCurrent - 删除前该会话是否为主视图（删完就查不到了，必须提前记下）
+		 * @param workspaceId - 宿主返回的工作区 id
+		 */
+		function leaveDeletedView(ctx, wasCurrent, workspaceId) {
+			if (wasCurrent !== true) return false;
+			const uiWorkspace = ctx?.get?.('uiWorkspace');
+			if (uiWorkspace === void 0) return false;
+			try {
+				if (typeof workspaceId === 'string' && workspaceId !== '' && typeof uiWorkspace.startSession === 'function') {
+					uiWorkspace.startSession(workspaceId);
+					return true;
+				}
+				if (typeof workspaceId === 'string' && workspaceId !== '' && typeof uiWorkspace.openWorkspace === 'function') {
+					uiWorkspace.openWorkspace(workspaceId);
+					return true;
+				}
+				return false;
+			} catch (error) {
+				console.warn(`${PKG}: 删除后切走视图失败`, error);
+				return false;
+			}
+			return false;
+		}
+
 		/** 插槽没给 hook 时的空实现：hooks 必须无条件调用，不能按条件跳过。 */
 		const NOOP_HOOK = () => void 0;
 
@@ -505,10 +535,10 @@ window.__ModuleLoader__.load({
 		 * 判断某个会话是不是「当前主视图正在显示的那个」。
 		 *
 		 * 删掉正在看的会话会让主界面停在已经不存在的会话上（宿主没有删除语义，
-		 * 也就没有相应的“切走”逻辑），所以这种情况直接拦住。
+		 * 也就没有相应的“切走”逻辑），所以删之前要先记下这一状态，删完再据此切走。
 		 *
 		 * 检测手段按可靠性递减：uiSession 的 current store → 页面上是否出现该 id。
-		 * 拿不准时按「不是当前会话」处理，避免误挡正常删除。
+		 * 拿不准时按「不是当前会话」处理，避免误触发切换。
 		 */
 		function isCurrentSession(ctx, sessionId) {
 			try {
@@ -542,10 +572,8 @@ window.__ModuleLoader__.load({
 				danger: true,
 				onSelect: () => {
 					closeMenu?.(false);
-					if (isCurrentSession(pluginCtx, sessionId)) {
-						showNotice(t("delete.currentBlocked"));
-						return;
-					}
+					// 删除前先记下：这个会话是不是当前主视图（删完就查不到了）
+					const wasCurrent = isCurrentSession(pluginCtx, sessionId);
 					// 用挂到 body 的确认框：菜单容器有 transform + overflow:hidden，
 					// 在它内部渲染浮层会被裁掉。
 					bodyConfirm({
@@ -561,6 +589,8 @@ window.__ModuleLoader__.load({
 									const body = await call("/delete", { sessionId });
 									const warnings = Array.isArray(body.warnings) ? body.warnings : [];
 									done(warnings.length > 0 ? `${t("delete.done")} · ${warnings[0]}` : t("delete.done"));
+									// 删的是当前会话：把主视图切到该工作区的新会话
+									if (wasCurrent && !leaveDeletedView(pluginCtx, wasCurrent, body.workspaceId)) showNotice(t("delete.stuckHint"));
 								} catch (reason) {
 									fail(t("delete.failed", { message: reason instanceof Error ? reason.message : String(reason) }));
 								}
@@ -609,14 +639,8 @@ window.__ModuleLoader__.load({
 
 			const confirm = () => {
 				if (busy) return;
-				// 批量里只要有一个是当前正在看的会话，就整体拦下（避免删完界面卡在空壳上）
-				if (kind === "delete") {
-					const blocked = sessionIds.filter((id) => isCurrentSession(pluginCtx, id));
-					if (blocked.length > 0) {
-						setError(t("delete.currentBlocked"));
-						return;
-					}
-				}
+				// 删除前先记下：这批里是否有当前主视图的会话（删完就查不到了）
+				const wasCurrent = kind === "delete" && sessionIds.some((id) => isCurrentSession(pluginCtx, id));
 				setBusy(true);
 				setError(null);
 				void (async () => {
@@ -646,12 +670,14 @@ window.__ModuleLoader__.load({
 							const CHUNK = 25;
 							let deleted = 0;
 							let failed = 0;
+							let workspaceId = null;
 							const allWarnings = [];
 							for (let offset = 0; offset < sessionIds.length; offset += CHUNK) {
 								const slice = sessionIds.slice(offset, offset + CHUNK);
 								const body = await call("/delete-many", { sessionIds: slice });
 								deleted += body.deleted ?? 0;
 								failed += body.failed ?? 0;
+								if (typeof body.workspaceId === "string") workspaceId = body.workspaceId;
 								if (Array.isArray(body.warnings)) allWarnings.push(...body.warnings);
 								setProgress({ done: Math.min(offset + slice.length, sessionIds.length), total: sessionIds.length });
 							}
@@ -660,6 +686,7 @@ window.__ModuleLoader__.load({
 							showNotice(failed > 0
 								? t("delete.partial", { ok: deleted, failed })
 								: (allWarnings.length > 0 ? `${t("delete.doneMany", { n: deleted })} · ${allWarnings[0]}` : t("delete.doneMany", { n: deleted })));
+							if (wasCurrent && !leaveDeletedView(pluginCtx, wasCurrent, workspaceId)) showNotice(t("delete.stuckHint"));
 							return;
 						}
 						const body = await call("/delete", { sessionId: sessionIds[0] });
@@ -667,6 +694,7 @@ window.__ModuleLoader__.load({
 						onClose();
 						bumpData();
 						showNotice(list.length > 0 ? `${t("delete.done")} · ${list[0]}` : t("delete.done"));
+						if (wasCurrent && !leaveDeletedView(pluginCtx, wasCurrent, body.workspaceId)) showNotice(t("delete.stuckHint"));
 					} catch (reason) {
 						setError(reason instanceof Error ? reason.message : String(reason));
 						setBusy(false);

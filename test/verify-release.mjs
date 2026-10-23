@@ -40,6 +40,11 @@ const checks = [
   ['归档集合里的孤儿纳入诊断', store.includes('...registry.archived,')],
   ['批量分批发送', client.includes('const CHUNK = 25')],
   ['批量进度提示', client.includes('delete.progress')],
+  // 第三轮：当前会话保护
+  ['识别当前会话', client.includes('function isCurrentSession')],
+  ['删完自动切走视图', client.includes('function leaveDeletedView')],
+  ['删除返回 workspaceId', host.includes('workspaceId: await resolveWorkspaceId')],
+  ['切换失败有提示', client.includes('delete.stuckHint')],
 ];
 
 let bad = 0;

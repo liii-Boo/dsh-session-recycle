@@ -306,6 +306,25 @@ function readSessionFlags(ctx, sessionId) {
   return { archived: file.archived.has(sessionId), pinned: file.pinned.has(sessionId), source: 'file' };
 }
 
+/** 会话所属工作区 id：先问服务，再按路径匹配登记表。 */
+async function resolveWorkspaceId(ctx, cwd) {
+  if (typeof cwd !== 'string' || cwd === '') return null;
+  const registry = ctx.get('workspaceRegistry');
+  if (registry !== void 0 && typeof registry.resolveByPath === 'function') {
+    try {
+      const entity = await registry.resolveByPath(cwd);
+      const id = entity?.id;
+      if (typeof id === 'string' && id !== '') return id;
+    } catch {
+      /* 落到文件匹配 */
+    }
+  }
+  const file = readRegistry();
+  const needle = cwd.toLowerCase();
+  const hit = file.workspaces.find((workspace) => typeof workspace.path === 'string' && workspace.path.toLowerCase() === needle);
+  return hit?.id ?? null;
+}
+
 /** 删除后清理登记：服务优先，文件层兜底。每步结果都收进返回值，不再吞掉。 */
 async function forget(ctx, sessionId) {
   const registry = ctx.get('workspaceRegistry');
@@ -482,6 +501,8 @@ function registerRoutes(webServer, fiber, ctx) {
       movedSession: result.movedSession,
       movedCache: result.movedCache,
       slug: located?.slug ?? null,
+      // 客户端用它把主视图切到该工作区的新会话（删掉的正是当前会话时）
+      workspaceId: await resolveWorkspaceId(ctx, meta.cwd),
       quiesced: quiesced.notes,
       forgotten,
       warnings,
@@ -528,7 +549,10 @@ function registerRoutes(webServer, fiber, ctx) {
       });
     }
     const deleted = results.filter((item) => item.ok).length;
-    return { ok: true, deleted, failed: results.length - deleted, results, warnings };
+    // 批量里可能包含当前会话：给客户端一个可切换的工作区 id
+    const firstCwd = readProjMeta(ids[0]).cwd;
+    const workspaceId = await resolveWorkspaceId(ctx, firstCwd);
+    return { ok: true, deleted, failed: results.length - deleted, results, warnings, workspaceId };
   }));
 
   /** 还原。 */
