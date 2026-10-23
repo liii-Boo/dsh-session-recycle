@@ -404,6 +404,17 @@ async function admitRestored(ctx, sessionId, meta) {
     return { viaService: false, registered: registryUpdated, warnings };
   }
 
+  // 关键一步：宿主启动时把会话头索引进内存，还原的文件它并不知道。
+  // sessionKnown() 会重新扫描持久化目录并重建索引，不调它 attachSession 会读不到 header 而失败。
+  if (typeof registry.sessionKnown === 'function') {
+    try {
+      const known = await registry.sessionKnown(sessionId);
+      if (known !== true) warnings.push('宿主仍未索引到该会话（可能需要重启 DSH）');
+    } catch (error) {
+      warnings.push(`刷新会话索引失败：${String(error?.message ?? error)}`);
+    }
+  }
+
   let entity;
   const cwd = typeof meta?.cwd === 'string' && meta.cwd !== '' ? meta.cwd : null;
   if (cwd !== null && typeof registry.resolveByPath === 'function') {
@@ -486,8 +497,8 @@ function registerRoutes(webServer, fiber, ctx) {
     });
     if (result.ok !== true) return { ...result, quiesced: quiesced.notes };
 
-    // 没 live 过的会话不会有 dispose 回写，复查一次就够
-    const swept = await sweepReappearedCache(result.entry, sessionId, quiesced.live === true ? 3 : 1);
+    // 没 live 过的会话不会有 dispose 回写，不用等复查窗口（每条省 150ms）
+    const swept = await sweepReappearedCache(result.entry, sessionId, quiesced.live === true ? 3 : 0);
     const forgotten = await forget(ctx, sessionId);
 
     const warnings = [];
@@ -534,7 +545,7 @@ function registerRoutes(webServer, fiber, ctx) {
       });
       if (result.ok === true) {
         // 批量场景下每条都要等：非 live 的会话只复查一轮，避免几百条时请求超时
-        await sweepReappearedCache(result.entry, sessionId, quiesced.live === true ? 3 : 1);
+        await sweepReappearedCache(result.entry, sessionId, quiesced.live === true ? 3 : 0);
         const forgotten = await forget(ctx, sessionId);
         if (forgotten.detached !== true && forgotten.stripped !== true) {
           warnings.push(`${sessionId}：登记表未同步移除`);

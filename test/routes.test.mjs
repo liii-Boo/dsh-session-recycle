@@ -77,7 +77,7 @@ function fakeRes() {
 }
 
 /** 启动插件并取回路由表。 */
-async function boot() {
+async function boot(services = {}) {
   const { apply } = await import('../index.js');
   const routes = new Map();
   const ctx = {
@@ -96,7 +96,7 @@ async function boot() {
       return () => {};
     },
   };
-  ctx.get = (name) => (name === 'webServer' ? webServer : void 0);
+  ctx.get = (name) => (name === 'webServer' ? webServer : services[name]);
   apply(ctx);
   return routes;
 }
@@ -222,4 +222,45 @@ test('idle-candidates：不限空会话且天数为 0 时拒绝（避免一次�
   // 给了天数就允许
   const withDays = await call(routes, '/idle-candidates', { days: 7, emptyOnly: false });
   assert.equal(withDays.payload.ok, true);
+});
+
+test('还原时先让宿主重新索引（sessionKnown），再 attachSession 登记', async () => {
+  fixture();
+  const calls = [];
+  const registry = {
+    async sessionKnown(id) {
+      calls.push('sessionKnown');
+      void id;
+      return true;
+    },
+    async resolveByPath(cwd) {
+      calls.push('resolveByPath');
+      void cwd;
+      return {
+        id: 'ws-1',
+        async attachSession(id) {
+          calls.push('attachSession');
+          void id;
+        },
+      };
+    },
+    archivedSessionIds: [],
+    pinnedSessionIds: [],
+  };
+
+  const routes = await boot({ workspaceRegistry: registry });
+
+  const del = await call(routes, '/delete', { sessionId: MAIN });
+  assert.equal(del.payload.ok, true);
+  const restored = await call(routes, '/restore', { entry: del.payload.entry, sessionId: MAIN });
+  assert.equal(restored.payload.ok, true, JSON.stringify(restored.payload));
+
+  // 顺序很关键：必须先重新索引，否则 attachSession 读不到 header 会失败
+  assert.ok(calls.includes('sessionKnown'), '必须调用 sessionKnown');
+  assert.ok(calls.includes('attachSession'), '必须调用 attachSession');
+  assert.ok(
+    calls.indexOf('sessionKnown') < calls.indexOf('attachSession'),
+    'sessionKnown 必须在 attachSession 之前',
+  );
+  assert.equal(restored.payload.admission?.registered, true);
 });
