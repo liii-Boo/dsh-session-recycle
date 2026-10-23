@@ -49,6 +49,7 @@ window.__ModuleLoader__.load({
 			"delete.confirm": "删除",
 			"delete.cancel": "取消",
 			"delete.pending": "正在移入回收站…",
+			"delete.progress": "已处理 {done} / {total}",
 			"delete.failed": "删除失败：{message}",
 			"delete.done": "已移入回收站",
 			"delete.doneMany": "已移入回收站 {n} 个",
@@ -119,6 +120,7 @@ window.__ModuleLoader__.load({
 			"delete.confirm": "Delete",
 			"delete.cancel": "Cancel",
 			"delete.pending": "Moving to the recycle bin…",
+			"delete.progress": "{done} / {total} processed",
 			"delete.failed": "Delete failed: {message}",
 			"delete.done": "Moved to the recycle bin",
 			"delete.doneMany": "Moved {n} sessions to the recycle bin",
@@ -544,6 +546,7 @@ window.__ModuleLoader__.load({
 		function ConfirmOverlay({ request, t, onClose }) {
 			const [busy, setBusy] = React.useState(false);
 			const [error, setError] = React.useState(null);
+			const [progress, setProgress] = React.useState(null);
 			const kind = request.kind ?? "delete";
 			const sessionIds = Array.isArray(request.sessionIds) ? request.sessionIds : [];
 			const many = sessionIds.length > 1;
@@ -596,13 +599,24 @@ window.__ModuleLoader__.load({
 							return;
 						}
 						if (many) {
-							const body = await call("/delete-many", { sessionIds });
-							const list = Array.isArray(body.warnings) ? body.warnings : [];
+							// 分批发送：每条都要停手 + 复查缓存，一次几百条会让单个请求跑几分钟
+							const CHUNK = 25;
+							let deleted = 0;
+							let failed = 0;
+							const allWarnings = [];
+							for (let offset = 0; offset < sessionIds.length; offset += CHUNK) {
+								const slice = sessionIds.slice(offset, offset + CHUNK);
+								const body = await call("/delete-many", { sessionIds: slice });
+								deleted += body.deleted ?? 0;
+								failed += body.failed ?? 0;
+								if (Array.isArray(body.warnings)) allWarnings.push(...body.warnings);
+								setProgress({ done: Math.min(offset + slice.length, sessionIds.length), total: sessionIds.length });
+							}
 							onClose();
 							bumpData();
-							showNotice(body.failed > 0
-								? t("delete.partial", { ok: body.deleted, failed: body.failed })
-								: (list.length > 0 ? `${t("delete.doneMany", { n: body.deleted })} · ${list[0]}` : t("delete.doneMany", { n: body.deleted })));
+							showNotice(failed > 0
+								? t("delete.partial", { ok: deleted, failed })
+								: (allWarnings.length > 0 ? `${t("delete.doneMany", { n: deleted })} · ${allWarnings[0]}` : t("delete.doneMany", { n: deleted })));
 							return;
 						}
 						const body = await call("/delete", { sessionId: sessionIds[0] });
@@ -633,6 +647,8 @@ window.__ModuleLoader__.load({
 				h("div", { className: "dsr-dialog-p" }, descriptions[kind] ?? descriptions.delete),
 				h("div", { className: "dsr-dialog-target" }, target),
 				busy && h("div", { className: "dsr-status", role: "status" }, pendingText[kind] ?? pendingText.delete),
+				progress !== null && h("div", { className: "dsr-status", role: "status" },
+					t("delete.progress", { done: progress.done, total: progress.total })),
 				error !== null && h("div", { className: "dsr-error", role: "alert" },
 					t("delete.failed", { message: error })),
 				h("div", { className: "dsr-dialog-foot" },

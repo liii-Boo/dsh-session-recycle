@@ -33,6 +33,7 @@ import {
   readTrashMeta,
   restoreFromTrash,
   snapshot,
+  stripFlagsFromRegistry,
   stripFromRegistry,
   sweepReappearedCache,
   TRASH_ENTRY_RE,
@@ -282,6 +283,29 @@ async function quiesce(ctx, sessionId) {
   return { live: true, notes };
 }
 
+/**
+ * 读归档/置顶标记：优先问宿主服务（内存权威），拿不到再退回文件。
+ *
+ * 直接读文件的问题是：宿主可能还没把内存里的变更落盘，读到的就是旧值，
+ * 还原时会把标记恢复错。
+ */
+function readSessionFlags(ctx, sessionId) {
+  const registry = ctx.get('workspaceRegistry');
+  if (registry !== void 0) {
+    try {
+      const archived = registry.archivedSessionIds;
+      const pinned = registry.pinnedSessionIds;
+      if (Array.isArray(archived) && Array.isArray(pinned)) {
+        return { archived: archived.includes(sessionId), pinned: pinned.includes(sessionId), source: 'service' };
+      }
+    } catch {
+      /* 服务没提供这两个 getter 时退回文件 */
+    }
+  }
+  const file = readRegistry();
+  return { archived: file.archived.has(sessionId), pinned: file.pinned.has(sessionId), source: 'file' };
+}
+
 /** 删除后清理登记：服务优先，文件层兜底。每步结果都收进返回值，不再吞掉。 */
 async function forget(ctx, sessionId) {
   const registry = ctx.get('workspaceRegistry');
@@ -304,6 +328,13 @@ async function forget(ctx, sessionId) {
       result.stripped = stripFromRegistry([sessionId]);
     } catch {
       result.stripped = false;
+    }
+  } else if (result.unarchived !== true || result.unpinned !== true) {
+    // detach 成功但标记没清干净：只摘标记，不动归属，避免留下看不见的孤儿登记
+    try {
+      result.flagsStripped = stripFlagsFromRegistry([sessionId]);
+    } catch {
+      result.flagsStripped = false;
     }
   }
   try {
@@ -413,7 +444,6 @@ function registerRoutes(webServer, fiber, ctx) {
     const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : '';
     if (!SESSION_ID_RE.test(sessionId)) return { ok: false, code: 'invalid', error: 'sessionId 形态不合法' };
 
-    const registry = readRegistry();
     // 这里只为了拿 slug 回显：读不到目录不该让整个删除请求 500，扫不到就留空
     let located = null;
     try {
@@ -422,13 +452,14 @@ function registerRoutes(webServer, fiber, ctx) {
       located = null;
     }
     const meta = readProjMeta(sessionId);
+    const flags = readSessionFlags(ctx, sessionId);
     const quiesced = await quiesce(ctx, sessionId);
     const hasRegistry = ctx.get('workspaceRegistry') !== void 0;
     const result = await moveToTrash(sessionId, {
       title: meta.title,
       cwd: meta.cwd,
-      archived: registry.archived.has(sessionId),
-      pinned: registry.pinned.has(sessionId),
+      archived: flags.archived,
+      pinned: flags.pinned,
       // 宿主在线时交给 forget() 走服务摘除，避免文件层写入覆盖宿主的并发修改
       stripRegistry: !hasRegistry,
     });
@@ -464,18 +495,18 @@ function registerRoutes(webServer, fiber, ctx) {
     if (ids.length === 0) return { ok: false, code: 'invalid', error: 'sessionIds 为空或不合法' };
     if (ids.length > BATCH_LIMIT) return { ok: false, code: 'too-many', error: `一次最多 ${BATCH_LIMIT} 个` };
 
-    const registry = readRegistry();
     const hasRegistry = ctx.get('workspaceRegistry') !== void 0;
     const results = [];
     const warnings = [];
     for (const sessionId of ids) {
       const meta = readProjMeta(sessionId);
+      const flags = readSessionFlags(ctx, sessionId);
       const quiesced = await quiesce(ctx, sessionId);
       const result = await moveToTrash(sessionId, {
         title: meta.title,
         cwd: meta.cwd,
-        archived: registry.archived.has(sessionId),
-        pinned: registry.pinned.has(sessionId),
+        archived: flags.archived,
+        pinned: flags.pinned,
         stripRegistry: !hasRegistry,
       });
       if (result.ok === true) {

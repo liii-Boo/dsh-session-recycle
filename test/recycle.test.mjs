@@ -24,6 +24,7 @@ import {
   scanSessionDirs,
   restoreFromTrash,
   snapshot,
+  stripFlagsFromRegistry,
   sweepReappearedCache,
   TRASH_ENTRY_RE,
 } from '../lib/store.mjs';
@@ -553,4 +554,60 @@ test('stripRegistry:false 时不写 workspace.json（避免覆盖宿主的并发
   const second = await moveToTrash(ARCHIVED, { title: 'y' });
   assert.equal(second.ok, true);
   assert.equal(typeof second.stripped, 'boolean');
+});
+test('还原半失败会回滚：缓存搬不回去时，日志退回回收站', async () => {
+  const home = fixture();
+  const removed = await moveToTrash(ARCHIVED, { title: '会被回滚的会话' });
+  assert.equal(removed.ok, true);
+  const entry = removed.entry;
+  const trashSessionDir = path.join(home, 'trash', entry, ARCHIVED, 'session');
+  const trashCache = path.join(home, 'trash', entry, ARCHIVED, `${ARCHIVED}.json`);
+  assert.equal(fs.existsSync(trashSessionDir), true, '回收站里应有日志');
+  assert.equal(fs.existsSync(trashCache), true, '回收站里应有缓存');
+
+  // 注入：日志能搬回去，缓存搬运失败
+  let calls = 0;
+  const rename = async (from, to) => {
+    calls += 1;
+    if (calls === 2) throw new Error('模拟缓存搬运失败');
+    fs.renameSync(from, to);
+  };
+
+  const restored = await restoreFromTrash(entry, ARCHIVED, { rename });
+  assert.equal(restored.ok, false);
+  assert.equal(restored.code, 'restore-failed');
+
+  // 关键断言：日志必须退回回收站，不能半还原
+  const target = path.join(home, 'sessions', SLUG, ARCHIVED);
+  assert.equal(fs.existsSync(target), false, '目标位置不应残留半还原的日志');
+  assert.equal(fs.existsSync(trashSessionDir), true, '日志应退回回收站');
+  assert.equal(listTrash().length, 1, '回收站条目仍在');
+});
+
+test('只留在归档集合里的 id 会被算作孤儿登记', () => {
+  const home = fixture();
+  // 直接删掉磁盘上的会话目录，只保留 workspace.json 里的归档记录
+  fs.rmSync(path.join(home, 'sessions', SLUG, ARCHIVED), { recursive: true, force: true });
+  fs.rmSync(path.join(home, 'storages', 'session_projcache', 'sessions', `${ARCHIVED}.json`), { force: true });
+
+  const state = snapshot();
+  assert.equal(
+    state.orphans.registryOnly.includes(ARCHIVED),
+    true,
+    '归档集合里的孤儿也必须被列出来',
+  );
+});
+
+test('stripFlagsFromRegistry 只摘标记，不动归属', () => {
+  const home = fixture();
+  const before = readRegistry();
+  assert.equal(before.archived.has(ARCHIVED), true);
+
+  const changed = stripFlagsFromRegistry([ARCHIVED]);
+  assert.equal(changed, true);
+
+  const after = readRegistry();
+  assert.equal(after.archived.has(ARCHIVED), false, '归档标记应被清掉');
+  assert.equal(after.sessionIds.includes(ARCHIVED), true, '归属不应被删');
+  void home;
 });

@@ -182,7 +182,7 @@ DSH 的子代理会话在磁盘上的目录名是**裸 uuid**（如 `8445b302-d5
 ## 开发
 
 ```powershell
-npm test                     # 33 个测试：存储层 26 + 路由层 7
+npm test                     # 38 个测试：存储层 30 + 路由层 8
 npm run audit                # 结构自审 + hooks 顺序 + 发布一致性（12 项）
 npm run verify:release       # 下载线上 Release 附件，校验修复是否在内
 node test/lint-client.mjs client.js   # 检查 i18n 键完整性（需带文件路径）
