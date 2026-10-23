@@ -502,34 +502,38 @@ window.__ModuleLoader__.load({
 		 * 删掉「当前正在看的会话」后，把主视图切走。
 		 *
 		 * 宿主没有删除语义，删完没有任何组件负责导航，页面会停在已不存在的会话上。
-		 * 三层兜底，任一成功即返回 true：
-		 *   1. `uiWorkspace.startSession(workspaceId)`（宿主「新会话」按钮用的就是它）
-		 *   2. `uiWorkspace.openWorkspace(workspaceId)`
-		 *   3. 直接点界面上那个「新会话」按钮
+		 * 三层兜底，任一成功即返回 `{ ok: true }`；都失败时返回 `{ ok:false, reason }`，
+		 * reason 会显示在提示里，便于定位到底卡在哪一层。
 		 *
 		 * @param wasCurrent - 删除前该会话是否为主视图（删完就查不到了，必须提前记下）
 		 * @param workspaceId - 宿主返回的工作区 id
 		 */
 		function leaveDeletedView(ctx, wasCurrent, workspaceId) {
-			if (wasCurrent !== true) return false;
+			if (wasCurrent !== true) return { ok: true, reason: 'not-current' };
 
 			const uiWorkspace = workspaceUi ?? ctx?.get?.('uiWorkspace');
 			const hasWorkspaceId = typeof workspaceId === 'string' && workspaceId !== '';
+			const fails = [];
 
-			if (uiWorkspace !== void 0) {
+			if (uiWorkspace === void 0 || uiWorkspace === null) fails.push('no-uiWorkspace');
+			else if (!hasWorkspaceId) fails.push('no-workspaceId');
+
+			if (uiWorkspace !== void 0 && uiWorkspace !== null) {
 				if (hasWorkspaceId && typeof uiWorkspace.startSession === 'function') {
 					try {
 						uiWorkspace.startSession(workspaceId);
-						return true;
+						return { ok: true, reason: 'startSession' };
 					} catch (error) {
+						fails.push('startSession:' + (error?.message ?? 'error'));
 						console.warn(`${PKG}: startSession 失败，改用 openWorkspace`, error);
 					}
 				}
 				if (hasWorkspaceId && typeof uiWorkspace.openWorkspace === 'function') {
 					try {
 						uiWorkspace.openWorkspace(workspaceId);
-						return true;
+						return { ok: true, reason: 'openWorkspace' };
 					} catch (error) {
+						fails.push('openWorkspace:' + (error?.message ?? 'error'));
 						console.warn(`${PKG}: openWorkspace 失败，改用点击「新会话」`, error);
 					}
 				}
@@ -545,12 +549,13 @@ window.__ModuleLoader__.load({
 				});
 				if (target !== void 0) {
 					target.click();
-					return true;
+					return { ok: true, reason: 'click-new-session' };
 				}
+				fails.push('no-button');
 			} catch (error) {
-				console.warn(`${PKG}: 点击「新会话」失败`, error);
+				fails.push('click:' + (error?.message ?? 'error'));
 			}
-			return false;
+			return { ok: false, reason: fails.join('|') };
 		}
 
 		/** 插槽没给 hook 时的空实现：hooks 必须无条件调用，不能按条件跳过。 */
@@ -615,7 +620,7 @@ window.__ModuleLoader__.load({
 									const warnings = Array.isArray(body.warnings) ? body.warnings : [];
 									done(warnings.length > 0 ? `${t("delete.done")} · ${warnings[0]}` : t("delete.done"));
 									// 删的是当前会话：把主视图切到该工作区的新会话
-									if (wasCurrent && !leaveDeletedView(pluginCtx, wasCurrent, body.workspaceId)) showNotice(t("delete.stuckHint"));
+									{ const nav = leaveDeletedView(pluginCtx, wasCurrent, body.workspaceId); if (wasCurrent && !nav.ok) showNotice(`${t("delete.stuckHint")}（${nav.reason}）`); }
 								} catch (reason) {
 									fail(t("delete.failed", { message: reason instanceof Error ? reason.message : String(reason) }));
 								}
@@ -711,7 +716,7 @@ window.__ModuleLoader__.load({
 							showNotice(failed > 0
 								? t("delete.partial", { ok: deleted, failed })
 								: (allWarnings.length > 0 ? `${t("delete.doneMany", { n: deleted })} · ${allWarnings[0]}` : t("delete.doneMany", { n: deleted })));
-							if (wasCurrent && !leaveDeletedView(pluginCtx, wasCurrent, workspaceId)) showNotice(t("delete.stuckHint"));
+							{ const nav = leaveDeletedView(pluginCtx, wasCurrent, workspaceId); if (wasCurrent && !nav.ok) showNotice(`${t("delete.stuckHint")}（${nav.reason}）`); }
 							return;
 						}
 						const body = await call("/delete", { sessionId: sessionIds[0] });
@@ -719,7 +724,7 @@ window.__ModuleLoader__.load({
 						onClose();
 						bumpData();
 						showNotice(list.length > 0 ? `${t("delete.done")} · ${list[0]}` : t("delete.done"));
-						if (wasCurrent && !leaveDeletedView(pluginCtx, wasCurrent, body.workspaceId)) showNotice(t("delete.stuckHint"));
+						{ const nav = leaveDeletedView(pluginCtx, wasCurrent, body.workspaceId); if (wasCurrent && !nav.ok) showNotice(`${t("delete.stuckHint")}（${nav.reason}）`); }
 					} catch (reason) {
 						setError(reason instanceof Error ? reason.message : String(reason));
 						setBusy(false);
