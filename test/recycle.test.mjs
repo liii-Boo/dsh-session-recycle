@@ -445,3 +445,16 @@ test('会话 id 白名单：接受裸 uuid 与 ~XXXX，拒绝路径穿越', () =
     assert.equal(valid(id), false, `${id} 应被拒绝`);
   }
 });
+
+test('彻底删除单条后，时间戳目录不残留空壳', async () => {
+  const home = fixture();
+  const removed = await moveToTrash(MAIN, { title: 'x' });
+  assert.equal(removed.ok, true);
+  const stampDir = path.join(home, 'trash', removed.entry);
+  assert.equal(fs.existsSync(stampDir), true);
+
+  const purged = purgeFromTrash(removed.entry, MAIN);
+  assert.equal(purged.ok, true);
+  assert.equal(fs.existsSync(stampDir), false, '空的条目目录应被一并清掉');
+  assert.equal(listTrash().length, 0);
+});
