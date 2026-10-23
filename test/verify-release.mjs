@@ -16,6 +16,7 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsr-verify-'));
 execFileSync('tar', ['-xzf', tgz, '-C', dir]);
 
 const store = fs.readFileSync(path.join(dir, 'package', 'lib', 'store.mjs'), 'utf8');
+const host = fs.readFileSync(path.join(dir, 'package', 'index.js'), 'utf8');
 const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package', 'package.json'), 'utf8'));
 
 const checks = [
@@ -25,6 +26,13 @@ const checks = [
   ['轮数严格 === 0', store.includes('session.turns === 0')],
   ['孤儿排除不可读目录', store.includes('unreadableIds.has(id)')],
   ['purge 清理空壳', store.includes('留空壳')],
+  ['stripRegistry 可关闭', store.includes('extra.stripRegistry === false')],
+  ['还原失败回滚', store.includes('要么都回去，要么都不动')],
+  ['冲突备份会清理', store.includes('conflictBackup')],
+  ['服务摘除成功则不写文件', host.includes('serviceDetached')],
+  ['不限空会话必须给天数', host.includes('days === 0')],
+  ['批量上限 200', host.includes('const BATCH_LIMIT = 200')],
+  ['测试脚本跑两个文件', String(pkg.scripts?.test ?? '').includes('routes.test.mjs')],
 ];
 
 let bad = 0;
