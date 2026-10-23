@@ -1,0 +1,6 @@
+# dsh-session-recycle bundle patch: 把插件挂进 profile 的层栈。
+# 宿主半边注册 /dsh-session-recycle/* 路由，浏览器半边往会话右键菜单、侧栏入口和设置页插槽里放组件。
+# 注意：name 必须与 package.json 的 name 完全一致（含作用域），否则模块解析不到。
+- insert:
+    - id: dsh-session-recycle
+      name: '@liii-boo/dsh-session-recycle'

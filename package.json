@@ -1,0 +1,61 @@
+{
+  "name": "@liii-boo/dsh-session-recycle",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "会话回收站：右键删除会话进回收站（可还原）、批量删除、按天数清理空会话、诊断并清理孤儿缓存。 · Session recycle bin for DeepSeek Harness: right-click delete into a recoverable bin, batch delete, idle cleanup, and orphan-cache diagnosis.",
+  "license": "MIT",
+  "author": "liii-Boo",
+  "homepage": "https://github.com/liii-Boo/dsh-session-recycle#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/liii-Boo/dsh-session-recycle.git"
+  },
+  "bugs": {
+    "url": "https://github.com/liii-Boo/dsh-session-recycle/issues"
+  },
+  "main": "index.js",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "dsh",
+    "session",
+    "recycle-bin",
+    "delete"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib",
+    "cordis.patch.yml",
+    "LICENSE",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    },
+    "manifestVersion": 1
+  },
+  "scripts": {
+    "test": "node --test test/recycle.test.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.5"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}
