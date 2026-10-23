@@ -34,6 +34,7 @@
     "index.js",
     "client.js",
     "lib",
+    "docs",
     "cordis.patch.yml",
     "LICENSE",
     "README.md"

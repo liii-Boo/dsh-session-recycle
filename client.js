@@ -166,7 +166,7 @@ window.__ModuleLoader__.load({
 		};
 
 		const STYLE = `
-.dsr-panel { display:flex; flex-direction:column; gap:12px; font-size:13px; }
+.dsr-panel { position:relative; display:flex; flex-direction:column; gap:12px; font-size:13px; }
 .dsr-page { height:100%; overflow:auto; padding:16px 18px; box-sizing:border-box; }
 .dsr-tabs { display:flex; gap:8px; border-bottom:1px solid var(--dsh-color-border,#e5e5e5); align-items:center; }
 .dsr-tab { padding:6px 10px; cursor:pointer; border:none; background:transparent; color:inherit; font:inherit; opacity:.65; border-bottom:2px solid transparent; }
@@ -192,6 +192,20 @@ window.__ModuleLoader__.load({
 .dsr-seg { display:flex; border:1px solid var(--dsh-color-border,#e5e5e5); border-radius:8px; overflow:hidden; }
 .dsr-seg button { padding:6px 14px; border:none; background:transparent; color:inherit; font:inherit; cursor:pointer; opacity:.6; }
 .dsr-seg button[data-active="true"] { opacity:1; font-weight:600; background:color-mix(in srgb, currentColor 10%, transparent); }
+/* 面板内遮罩：视口固定定位，保证对话框始终居中可见 */
+.dsr-scrim { position:fixed; inset:0; z-index:2147483000; display:flex; align-items:center; justify-content:center; background:rgba(15,18,26,.38); }
+/* 挂到 body 的遮罩：给右键菜单那条路径用，不受任何容器裁剪 */
+.dsr-scrim-body { position:fixed; inset:0; z-index:2147483000; display:flex; align-items:center; justify-content:center; background:rgba(15,18,26,.38); }
+.dsr-dialog { width:min(400px,100%); background:var(--dsh-color-surface,#fff); color:inherit; border:1px solid var(--dsh-color-border,#e5e5e5); border-radius:14px; padding:20px 22px 16px; box-shadow:0 24px 60px rgba(0,0,0,.26); display:flex; flex-direction:column; gap:8px; }
+.dsr-dialog-h { font-size:15px; font-weight:600; line-height:1.4; }
+.dsr-dialog-p { font-size:13px; line-height:1.6; opacity:.7; }
+.dsr-dialog-target { font-size:12px; line-height:1.5; opacity:.55; word-break:break-all; }
+.dsr-dialog-foot { display:flex; justify-content:flex-end; gap:8px; margin-top:8px; }
+.dsr-banner { padding:8px 12px; border-radius:8px; font-size:12.5px; background:color-mix(in srgb, #2f9e63 14%, transparent); border:1px solid color-mix(in srgb, #2f9e63 35%, transparent); }
+.dsr-btn { padding:6px 14px; border-radius:8px; border:1px solid var(--dsh-color-border,#d8dbe2); background:transparent; color:inherit; font:inherit; cursor:pointer; }
+.dsr-btn:hover:not(:disabled) { background:color-mix(in srgb, currentColor 8%, transparent); }
+.dsr-btn:disabled { opacity:.5; cursor:default; }
+.dsr-btn-danger { color:#d04a4a; border-color:color-mix(in srgb, #d04a4a 45%, transparent); }
 `;
 
 		// ── 小工具 ──────────────────────────────────────────────────────────
@@ -275,32 +289,6 @@ window.__ModuleLoader__.load({
 			};
 		}
 
-		/** 简易订阅仓库：菜单项里打开弹窗，弹窗组件在 overlay 槽位里读它。 */
-		let pending = null;
-		const pendingListeners = new Set();
-
-		function subscribePending(listener) {
-			pendingListeners.add(listener);
-			return () => {
-				pendingListeners.delete(listener);
-			};
-		}
-
-		function readPending() {
-			return pending;
-		}
-
-		function openConfirm(request) {
-			pending = request;
-			for (const listener of [...pendingListeners]) listener();
-		}
-
-		function closeConfirm() {
-			if (pending === null) return;
-			pending = null;
-			for (const listener of [...pendingListeners]) listener();
-		}
-
 		/** 顶部提示条。 */
 		let notice = null;
 		let noticeSeq = 0;
@@ -326,6 +314,105 @@ window.__ModuleLoader__.load({
 		function clearNotice() {
 			notice = null;
 			for (const listener of [...noticeListeners]) listener();
+		}
+
+		/**
+		 * 挂到 document.body 的确认框（原生 DOM）。
+		 *
+		 * 右键菜单那条路径不能用面板里的 React 遮罩：菜单本身在一个被
+		 * `transform` + `overflow:hidden` 裁剪的容器里，绝对定位的遮罩只会露出一条。
+		 * 挂到 body 上就与任何容器无关，样式仍复用全局注入的 .dsr-* 类。
+		 *
+		 * @param options - { title, desc, target, confirmLabel, cancelLabel, onConfirm }
+		 *   onConfirm(done, fail)：done(结果文本) 关闭并提示；fail(错误) 留在框内显示。
+		 */
+		function bodyConfirm(options) {
+			const scrim = document.createElement("div");
+			scrim.className = "dsr-scrim-body";
+
+			const card = document.createElement("div");
+			card.className = "dsr-dialog";
+			card.setAttribute("role", "dialog");
+			card.setAttribute("aria-modal", "true");
+
+			const head = document.createElement("div");
+			head.className = "dsr-dialog-h";
+			head.textContent = options.title;
+			card.appendChild(head);
+
+			const desc = document.createElement("div");
+			desc.className = "dsr-dialog-p";
+			desc.textContent = options.desc;
+			card.appendChild(desc);
+
+			if (options.target) {
+				const target = document.createElement("div");
+				target.className = "dsr-dialog-target";
+				target.textContent = options.target;
+				card.appendChild(target);
+			}
+
+			const status = document.createElement("div");
+			status.className = "dsr-status";
+			status.setAttribute("role", "status");
+			status.style.display = "none";
+			card.appendChild(status);
+
+			const foot = document.createElement("div");
+			foot.className = "dsr-dialog-foot";
+
+			const cancel = document.createElement("button");
+			cancel.type = "button";
+			cancel.className = "dsr-btn";
+			cancel.textContent = options.cancelLabel;
+			foot.appendChild(cancel);
+
+			const ok = document.createElement("button");
+			ok.type = "button";
+			ok.className = "dsr-btn dsr-btn-danger";
+			ok.textContent = options.confirmLabel;
+			foot.appendChild(ok);
+
+			card.appendChild(foot);
+			scrim.appendChild(card);
+
+			const dispose = () => {
+				scrim.remove();
+				document.removeEventListener("keydown", onKey);
+			};
+			const onKey = (event) => {
+				if (event.key === "Escape") dispose();
+			};
+
+			cancel.addEventListener("click", dispose);
+			scrim.addEventListener("click", (event) => {
+				if (event.target === scrim) dispose();
+			});
+			document.addEventListener("keydown", onKey);
+
+			ok.addEventListener("click", () => {
+				ok.disabled = true;
+				cancel.disabled = true;
+				status.textContent = options.pendingText ?? "";
+				status.style.display = options.pendingText ? "block" : "none";
+				options.onConfirm(
+					(text) => {
+						dispose();
+						if (typeof text === "string" && text !== "") showNotice(text);
+						bumpData();
+					},
+					(message) => {
+						ok.disabled = false;
+						cancel.disabled = false;
+						status.className = "dsr-error";
+						status.style.display = "block";
+						status.textContent = message;
+					},
+				);
+			});
+
+			document.body.appendChild(scrim);
+			ok.focus();
 		}
 
 		/**
@@ -417,32 +504,41 @@ window.__ModuleLoader__.load({
 				danger: true,
 				onSelect: () => {
 					closeMenu?.(false);
-					openConfirm({
-						kind: "delete",
-						sessionIds: [sessionId],
-						title: typeof displayTitle === "string" && displayTitle !== "" ? displayTitle : sessionId
+					// 用挂到 body 的确认框：菜单容器有 transform + overflow:hidden，
+					// 在它内部渲染浮层会被裁掉。
+					bodyConfirm({
+						title: t("delete.title"),
+						desc: t("delete.desc"),
+						target: typeof displayTitle === "string" && displayTitle !== "" ? displayTitle : sessionId,
+						confirmLabel: t("delete.confirm"),
+						cancelLabel: t("delete.cancel"),
+						pendingText: t("delete.pending"),
+						onConfirm: (done, fail) => {
+							void (async () => {
+								try {
+									const body = await call("/delete", { sessionId });
+									const warnings = Array.isArray(body.warnings) ? body.warnings : [];
+									done(warnings.length > 0 ? `${t("delete.done")} · ${warnings[0]}` : t("delete.done"));
+								} catch (reason) {
+									fail(t("delete.failed", { message: reason instanceof Error ? reason.message : String(reason) }));
+								}
+							})();
+						}
 					});
 				}
 			}, t("menu.delete"));
 		}
 
-		/** 二次确认弹窗：挂在 shell.overlay 上，菜单关掉也不会被卸载。 */
-		function RecycleConfirmDialog({ t }) {
-			const request = React.useSyncExternalStore(subscribePending, readPending, readPending);
-			if (request === null) return null;
-			return h(ConfirmForm, { key: request.sessionIds.join(","), request, t });
-		}
-
 		/**
-		 * 统一确认弹窗：删除（单条/批量）、彻底删除、清空回收站都走它。
+		 * 面板内的确认层。
 		 *
-		 * 之前 purge/empty 用 window.confirm，和这里的 Modal 语义不一致（一处能 ESC、一处不能），
-		 * 现在统一成一个，顺便把服务端返回的 warnings 显示出来。
+		 * 早期版本把确认弹窗注册到 `shell.overlay` 插槽并依赖 primitives.Modal，
+		 * 但在 DSH Desktop 上那个组件没有挂载出来 —— 表现为"点彻底删除完全没反应"。
+		 * 现在改成在面板自己的组件树里渲染一个覆盖层：不跨插槽，不依赖 Modal 的 props 约定。
 		 */
-		function ConfirmForm({ request, t }) {
+		function ConfirmOverlay({ request, t, onClose }) {
 			const [busy, setBusy] = React.useState(false);
 			const [error, setError] = React.useState(null);
-			const [warnings, setWarnings] = React.useState([]);
 			const kind = request.kind ?? "delete";
 			const sessionIds = Array.isArray(request.sessionIds) ? request.sessionIds : [];
 			const many = sessionIds.length > 1;
@@ -457,7 +553,7 @@ window.__ModuleLoader__.load({
 				purge: t("confirm.purgeDesc"),
 				empty: t("confirm.emptyDesc")
 			};
-			const pending = {
+			const pendingText = {
 				delete: t("delete.pending"),
 				purge: t("confirm.purgePending"),
 				empty: t("confirm.emptyPending")
@@ -465,28 +561,21 @@ window.__ModuleLoader__.load({
 
 			const close = () => {
 				if (busy) return;
-				closeConfirm();
-			};
-
-			const finish = (text) => {
-				// 先解除 busy 再关闭：关闭会卸载本组件，卸载后再 setState 没有意义
-				setBusy(false);
-				closeConfirm();
-				bumpData();
-				showNotice(text);
+				onClose();
 			};
 
 			const confirm = () => {
 				if (busy) return;
 				setBusy(true);
 				setError(null);
-				setWarnings([]);
 				void (async () => {
 					try {
 						if (kind === "empty") {
 							const body = await call("/empty-trash", {});
 							const failed = Array.isArray(body.failed) ? body.failed : [];
-							finish(failed.length === 0
+							onClose();
+							bumpData();
+							showNotice(failed.length === 0
 								? t("confirm.emptied", { n: body.purged ?? 0 })
 								: t("confirm.partialFailed", { n: failed.length }));
 							return;
@@ -496,20 +585,26 @@ window.__ModuleLoader__.load({
 							if (request.all === true) payload.all = true;
 							else payload.sessionId = request.sessionId;
 							await call("/purge", payload);
-							finish(t("confirm.purged"));
+							onClose();
+							bumpData();
+							showNotice(t("confirm.purged"));
 							return;
 						}
 						if (many) {
 							const body = await call("/delete-many", { sessionIds });
 							const list = Array.isArray(body.warnings) ? body.warnings : [];
-							finish(body.failed > 0
+							onClose();
+							bumpData();
+							showNotice(body.failed > 0
 								? t("delete.partial", { ok: body.deleted, failed: body.failed })
 								: (list.length > 0 ? `${t("delete.doneMany", { n: body.deleted })} · ${list[0]}` : t("delete.doneMany", { n: body.deleted })));
 							return;
 						}
 						const body = await call("/delete", { sessionId: sessionIds[0] });
 						const list = Array.isArray(body.warnings) ? body.warnings : [];
-						finish(list.length > 0 ? `${t("delete.done")} · ${list[0]}` : t("delete.done"));
+						onClose();
+						bumpData();
+						showNotice(list.length > 0 ? `${t("delete.done")} · ${list[0]}` : t("delete.done"));
 					} catch (reason) {
 						setError(reason instanceof Error ? reason.message : String(reason));
 						setBusy(false);
@@ -521,25 +616,26 @@ window.__ModuleLoader__.load({
 				? (many ? sessionIds.map(shortId).join(", ") : `${request.title ?? ""} · ${shortId(sessionIds[0])}`)
 				: (kind === "purge" ? t("confirm.purgeTarget") : t("confirm.emptyTarget"));
 
-			return h(primitives.Modal, {
-				open: true,
-				onClose: close,
-				closeLabel: t("close"),
-				title: titles[kind] ?? titles.delete,
-				description: descriptions[kind] ?? descriptions.delete,
-				footer: h(Fragment, null,
+			return h("div", {
+				className: "dsr-scrim",
+				role: "dialog",
+				"aria-modal": "true",
+				onClick: (event) => {
+					if (event.target === event.currentTarget) close();
+				}
+			}, h("div", { className: "dsr-dialog" },
+				h("div", { className: "dsr-dialog-h" }, titles[kind] ?? titles.delete),
+				h("div", { className: "dsr-dialog-p" }, descriptions[kind] ?? descriptions.delete),
+				h("div", { className: "dsr-dialog-target" }, target),
+				busy && h("div", { className: "dsr-status", role: "status" }, pendingText[kind] ?? pendingText.delete),
+				error !== null && h("div", { className: "dsr-error", role: "alert" },
+					t("delete.failed", { message: error })),
+				h("div", { className: "dsr-dialog-foot" },
 					h(primitives.Button, { variant: "outline", disabled: busy, onClick: close }, t("delete.cancel")),
 					h(primitives.Button, { variant: "outline", disabled: busy, onClick: confirm },
-						h("span", { className: "dsr-danger" }, t("delete.confirm")))),
-				children: [
-					h("div", { className: "dsr-sub", key: "target" }, target),
-					busy && h("div", { className: "dsr-status", role: "status", key: "busy" }, pending[kind] ?? pending.delete),
-					warnings.length > 0 && h("div", { className: "dsr-error", role: "status", key: "warn" }, warnings.join("; ")),
-					error !== null && h("div", { className: "dsr-error", role: "alert", key: "error" },
-						t("delete.failed", { message: error }))
-				]
-			});
+						h("span", { className: "dsr-danger" }, t("delete.confirm"))))));
 		}
+
 
 function RecycleToast() {
 			const current = React.useSyncExternalStore(subscribeNotice, readNotice, readNotice);
@@ -568,6 +664,13 @@ function RecycleToast() {
 			const [selected, setSelected] = React.useState(() => new Set());
 			const [days, setDays] = React.useState(String(DEFAULT_DAYS));
 			const [emptyOnly, setEmptyOnly] = React.useState(true);
+			// 确认层直接在本组件内渲染：shell.overlay 在 Desktop 上没挂载出来，
+			// 之前因此表现为「点彻底删除完全没反应」。
+			const [confirmRequest, setConfirmRequest] = React.useState(null);
+			const openConfirm = React.useCallback((request) => setConfirmRequest(request), []);
+			const closeConfirm = React.useCallback(() => setConfirmRequest(null), []);
+			// 操作结果提示也放在面板内：Toast 走 shell.overlay，在 Desktop 上同样挂不出来
+			const noticeInfo = React.useSyncExternalStore(subscribeNotice, readNotice, readNotice);
 
 
 			/** 请求代次：旧响应晚到时直接丢弃，否则会把刚删掉的会话又画回来。 */
@@ -768,6 +871,9 @@ function RecycleToast() {
 
 			return h("div", { className: "dsr-panel" },
 				sidebarCard,
+				// 确认层与提示条都渲染在面板内部：shell.overlay 在 Desktop 上挂不出来，
+				// 浮层又会被侧栏的 transform/overflow 裁掉。
+				noticeInfo !== null && h("div", { className: "dsr-banner", role: "status" }, noticeInfo.text),
 				h("div", { className: "dsr-tabs" },
 					h("button", { className: "dsr-tab", "data-active": String(tab === "sessions"), onClick: () => setTab("sessions") },
 						`${t("tab.sessions")} (${sessions.length})`),
@@ -792,7 +898,9 @@ function RecycleToast() {
 					(cacheOnly.length > 0 || registryOnly.length > 0) && h("div", { className: "dsr-toolbar" },
 						h(primitives.Button, { variant: "outline", disabled: busy, onClick: cleanAll }, t("orphans.cleanAll")))),
 
-				state !== null && h("div", { className: "dsr-hint" }, state.locations?.trash ?? ""));
+				state !== null && h("div", { className: "dsr-hint" }, state.locations?.trash ?? ""),
+				// 遮罩放在面板内部最外层：绝对定位铺满面板，居中显示对话框
+				confirmRequest !== null && h(ConfirmOverlay, { request: confirmRequest, t, onClose: closeConfirm }));
 		}
 
 		// ── 插件主体 ────────────────────────────────────────────────────────
@@ -890,12 +998,6 @@ function RecycleToast() {
 			};
 
 			ctx.slots.inject("shell.overlay", function* () {
-				yield ctx.slots.register({
-					name: "shell.overlay",
-					id: "session-recycle-confirm",
-					order: 62,
-					locale: NS
-				}, RecycleConfirmDialog);
 				yield ctx.slots.register({
 					name: "shell.overlay",
 					id: "session-recycle-toast",

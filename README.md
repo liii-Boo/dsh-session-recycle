@@ -123,8 +123,11 @@ dsh plugin --profile <你的 profile> add https://github.com/liii-Boo/dsh-sessio
 
 ## 截图
 
-> 待补：`docs/settings.png`（设置页面板）、`docs/sidebar.png`（侧栏入口）、`docs/delete.png`（右键菜单）。
-> 补上之后我会把图嵌到这里——现在仓库里还没有图，先不占位假图。
+**回收站列表与「彻底删除」确认**
+
+![回收站与确认对话框](docs/dialog.png)
+
+> 侧栏入口、右键菜单的截图待补。
 
 ## 环境要求
 
