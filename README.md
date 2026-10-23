@@ -81,17 +81,7 @@ DSH 只有「归档」，没有「删除」——会话层的接口里根本没�
 
 ## 安装
 
-```powershell
-dsh plugin --profile <你的 profile> add @liii-boo/dsh-session-recycle
-```
-
-装完重启 DSH。右侧「设置 → 会话回收站」就是面板。
-
-> **桌面版（Electron）注意**：`desktop` profile 由应用独占，上面这条命令会被拒绝
-> （`profile "desktop" is managed exclusively by the Electron application`）。
-> 请在 **设置 → 插件** 里安装，或让 agent 帮你完成"pnpm 安装 + 写入 `dsh.profile.bundles`"。
-
-**从 Release 安装**（推荐，不需要 npm 账号）：
+**方式一：从 Release 安装**（推荐，不需要 npm 账号）
 
 1. 打开 [Releases](https://github.com/liii-Boo/dsh-session-recycle/releases/latest)，下载 `liii-boo-dsh-session-recycle-1.0.0.tgz`
 2. 执行：
@@ -100,11 +90,20 @@ dsh plugin --profile <你的 profile> add @liii-boo/dsh-session-recycle
 dsh plugin --profile <你的 profile> add <tgz 的绝对路径>
 ```
 
-**直接用 git 装**（需要本机装有 git）：
+**方式二：直接用 git 装**（需要本机装有 git）
 
 ```powershell
 dsh plugin --profile <你的 profile> add https://github.com/liii-Boo/dsh-session-recycle
 ```
+
+装完重启 DSH。右侧「设置 → 会话回收站」就是面板。
+
+> **npm 暂未发布**：`npm install` / `dsh plugin add @liii-boo/dsh-session-recycle`
+> 现在会 404，等发布后本段会更新。
+
+> **桌面版（Electron）注意**：`desktop` profile 由应用独占，上面这些命令都会被拒绝
+> （`profile "desktop" is managed exclusively by the Electron application`）。
+> 请在 **设置 → 插件** 里安装，或让 agent 帮你完成"pnpm 安装 + 写入 `dsh.profile.bundles`"。
 
 **卸载**：设置 → 插件 → 找到本插件 → 删除，然后重启。
 

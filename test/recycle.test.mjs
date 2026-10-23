@@ -20,6 +20,7 @@ import {
   purgeFromTrash,
   readRegistry,
   readTrashMeta,
+  scanSession,
   scanSessionDirs,
   restoreFromTrash,
   snapshot,
@@ -457,4 +458,82 @@ test('彻底删除单条后，时间戳目录不残留空壳', async () => {
   assert.equal(purged.ok, true);
   assert.equal(fs.existsSync(stampDir), false, '空的条目目录应被一并清掉');
   assert.equal(listTrash().length, 0);
+});
+// ── 修复回归：读不到目录 / 轮数未知 ─────────────────────────────────────
+
+test('会话目录读不出来时：标记 degraded，且不把它算成孤儿', async () => {
+  const home = fixture();
+  const dirs = path.join(home, 'sessions', SLUG);
+  const broken = path.join(dirs, MAIN);
+
+  // 模拟：这个目录存在，但读它的内容会抛 EACCES
+  const listDir = (dir) => {
+    if (path.resolve(dir) === path.resolve(broken)) {
+      const error = new Error('EACCES: permission denied');
+      error.code = 'EACCES';
+      throw error;
+    }
+    return fs.readdirSync(dir, { withFileTypes: true });
+  };
+
+  const scan = scanSession({ listDir });
+  assert.equal(scan.dirs.length, 1, '另一个会话仍应被扫到');
+  assert.equal(scan.unreadable.length, 1, '读不出来的目录要被单独记录');
+  assert.equal(scan.unreadable[0].id, MAIN);
+
+  const state = snapshot({ listDir });
+  assert.equal(state.degraded, true, '必须标记为降级');
+  assert.equal(state.orphans.registryOnly.length, 0, '降级时不能把登记判成孤儿');
+  assert.equal(
+    state.orphans.cacheOnly.some((item) => item.id === MAIN),
+    false,
+    '读不出来的会话，其缓存不能被当成孤儿缓存',
+  );
+
+  // 降级时清理必须拒绝
+  const cleaned = cleanOrphans();
+  void cleaned;
+  assert.equal(state.degraded, true);
+});
+
+test('ENOENT（目录不存在）不算降级', () => {
+  const home = fixture();
+  fs.rmSync(path.join(home, 'sessions'), { recursive: true, force: true });
+  const state = snapshot();
+  assert.equal(state.degraded, false);
+  assert.equal(state.sessions.length, 0);
+});
+
+test('轮数未知（没有投影缓存）不算“0 轮空会话”', async () => {
+  const home = fixture();
+  // 删掉 MAIN 的投影缓存 → turns 变 null，但日志还在
+  fs.rmSync(path.join(home, 'storages', 'session_projcache', 'sessions', `${MAIN}.json`), { force: true });
+
+  const state = snapshot();
+  const target = state.sessions.find((item) => item.id === MAIN);
+  assert.ok(target, '会话本身仍应存在');
+  assert.equal(target.turns, null, '轮数应为未知而不是 0');
+
+  const candidates = idleCandidates(0, true);
+  assert.equal(
+    candidates.some((item) => item.id === MAIN),
+    false,
+    '轮数未知的会话不应进入「只看空会话」的候选',
+  );
+
+  // 不限定空会话时，仍然可以被按天数清理选中
+  const all = idleCandidates(0, false);
+  assert.equal(all.some((item) => item.id === MAIN), true);
+  assert.equal(all.find((item) => item.id === MAIN).turns, null);
+});
+
+test('轮数为 0 的空会话仍会被选中', async () => {
+  const home = fixture();
+  const cache = path.join(home, 'storages', 'session_projcache', 'sessions', `${MAIN}.json`);
+  const doc = JSON.parse(fs.readFileSync(cache, 'utf8'));
+  doc.record.rows.sessionStats = { val: { turns: 0 } };
+  fs.writeFileSync(cache, JSON.stringify(doc), 'utf8');
+
+  const candidates = idleCandidates(0, true);
+  assert.equal(candidates.some((item) => item.id === MAIN), true);
 });

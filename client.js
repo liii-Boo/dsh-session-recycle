@@ -64,6 +64,8 @@ window.__ModuleLoader__.load({
 			"sessions.matched": "命中 {n} 个",
 			"sessions.none": "没有符合条件的会话。",
 			"sessions.turns": "{n} 轮",
+			"sessions.turnsUnknown": "轮数未知",
+			"state.degraded": "有会话目录读不出来（{message}），孤儿清理已停用，避免误删。",
 			"sessions.lastAt": "最后活动 {time}",
 			"trash.empty": "回收站是空的。删除的会话会出现在这里。",
 			"trash.restore": "还原",
@@ -131,6 +133,8 @@ window.__ModuleLoader__.load({
 			"sessions.matched": "{n} matched",
 			"sessions.none": "No session matches.",
 			"sessions.turns": "{n} turns",
+			"sessions.turnsUnknown": "turns unknown",
+			"state.degraded": "Some session folders can't be read ({message}); orphan cleanup is disabled to avoid deleting the wrong thing.",
 			"sessions.lastAt": "Last active {time}",
 			"trash.empty": "The recycle bin is empty. Deleted sessions show up here.",
 			"trash.restore": "Restore",
@@ -784,7 +788,7 @@ function RecycleToast() {
 							session.archived && h("span", { className: "dsr-sub" }, " · 归档"),
 							session.pinned && h("span", { className: "dsr-sub" }, " · 置顶")),
 						h("div", { className: "dsr-sub" },
-							`${shortId(session.id)} · ${t("sessions.turns", { n: session.turns ?? 0 })} · ${fmtBytes(session.bytes)} · ${t("sessions.lastAt", { time: fmtTime(session.lastAt ?? session.mtime) })}`)))));
+							`${shortId(session.id)} · ${session.turns === null || session.turns === void 0 ? t("sessions.turnsUnknown") : t("sessions.turns", { n: session.turns })} · ${fmtBytes(session.bytes)} · ${t("sessions.lastAt", { time: fmtTime(session.lastAt ?? session.mtime) })}`)))));
 
 			const sessionsTab = h(Fragment, null,
 				h("div", { className: "dsr-toolbar" },
@@ -879,6 +883,8 @@ function RecycleToast() {
 					h(primitives.Button, { variant: "outline", disabled: busy || loading, onClick: () => refresh() }, t("state.refresh"))),
 
 				loading && h("div", { className: "dsr-status" }, t("state.loading")),
+				state?.degraded === true && h("div", { className: "dsr-error", role: "alert" },
+					t("state.degraded", { message: state.degradedError ?? "" })),
 				error !== null && h("div", { className: "dsr-error", role: "alert" }, t("action.failed", { message: error })),
 
 				tab === "sessions" && sessionsTab,

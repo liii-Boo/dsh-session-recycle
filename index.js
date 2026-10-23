@@ -409,7 +409,13 @@ function registerRoutes(webServer, fiber, ctx) {
     if (!SESSION_ID_RE.test(sessionId)) return { ok: false, code: 'invalid', error: 'sessionId 形态不合法' };
 
     const registry = readRegistry();
-    const located = findSessionDir(sessionId);
+    // 这里只为了拿 slug 回显：读不到目录不该让整个删除请求 500，扫不到就留空
+    let located = null;
+    try {
+      located = findSessionDir(sessionId);
+    } catch {
+      located = null;
+    }
     const meta = readProjMeta(sessionId);
     const quiesced = await quiesce(ctx, sessionId);
     const result = await moveToTrash(sessionId, {

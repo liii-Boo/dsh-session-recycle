@@ -62,8 +62,9 @@ dsh plugin --profile <你的 profile> add https://github.com/liii-Boo/dsh-sessio
 
 ### 验证情况
 
-- **28 个测试全过**：14 个存储层单测 + 7 个路由层测试 + 7 个子会话/编码相关用例
+- **33 个测试全过**：26 个存储层单测 + 7 个路由层测试（含删除→回收站→彻底删除的完整链路）
 - 路由层测试会真实驱动 `delete → state → purge`，断言文件从磁盘消失
 - 在 Windows + DSH Desktop `0.2.1-rc.2` 上实测：右键删除、批量删除、回收站还原、彻底删除、侧栏入口、子代理会话删除与还原
+- 修复：读不到会话目录时不再误判孤儿（降级并拒绝清理）；轮数未知不再当成 0 轮
 
 完整说明见 [README](https://github.com/liii-Boo/dsh-session-recycle#readme)。
