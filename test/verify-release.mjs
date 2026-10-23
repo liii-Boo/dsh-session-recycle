@@ -64,6 +64,11 @@ const checks = [
   ['通过 inject 取 uiWorkspace', client.includes('ctx.inject(["uiWorkspace"]')],
   ['删除返回 workspaceId', host.includes('workspaceId: await resolveWorkspaceId')],
   ['切换失败有提示', client.includes('delete.stuckHint')],
+  // 第四轮：先切后删 / 还原提示重启
+  ['先切走再删除', client.includes('const runDelete')],
+  ['用 retainInfo 判断当前会话', client.includes('retainedBy?.mainView')],
+  ['还原提示需要重启', client.includes('restoredNeedsRestart')],
+  ['workspace-id 路由', host.includes('/workspace-id')],
 ];
 
 let bad = 0;
