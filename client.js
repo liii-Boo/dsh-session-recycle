@@ -50,7 +50,7 @@ window.__ModuleLoader__.load({
 			"delete.cancel": "取消",
 			"delete.pending": "正在移入回收站…",
 			"delete.progress": "已处理 {done} / {total}",
-			"delete.stuckHint": "已删除。视图没能自动切换，请手动点一下别的会话。",
+			"delete.stuckHint": "无法自动切换到新会话（{reason}），已取消删除。请先手动点一下别的会话，再回来删这条。",
 			"delete.failed": "删除失败：{message}",
 			"delete.done": "已移入回收站",
 			"delete.doneMany": "已移入回收站 {n} 个",
@@ -98,7 +98,7 @@ window.__ModuleLoader__.load({
 			"action.failed": "操作失败：{message}",
 			"state.loading": "正在读取…",
 			"state.refresh": "刷新",
-			"hint.refresh": "还原后如果侧栏没变，切一次工作区或按 F5 刷新。",
+			"trash.restoredNeedsRestart": "已还原到磁盘。DSH 需要重启才会在侧栏看到它（宿主把会话归属缓存在内存里）。",
 			"unknown": "(未命名)",
 			"close": "关闭"
 		};
@@ -122,7 +122,7 @@ window.__ModuleLoader__.load({
 			"delete.cancel": "Cancel",
 			"delete.pending": "Moving to the recycle bin…",
 			"delete.progress": "{done} / {total} processed",
-			"delete.stuckHint": "Deleted. The view could not switch automatically — pick another session manually.",
+			"delete.stuckHint": "Could not switch to a new session ({reason}); deletion cancelled. Pick another session first, then delete this one.",
 			"delete.failed": "Delete failed: {message}",
 			"delete.done": "Moved to the recycle bin",
 			"delete.doneMany": "Moved {n} sessions to the recycle bin",
@@ -170,7 +170,7 @@ window.__ModuleLoader__.load({
 			"action.failed": "Action failed: {message}",
 			"state.loading": "Loading…",
 			"state.refresh": "Refresh",
-			"hint.refresh": "If the sidebar does not update after restoring, switch workspace once or press F5.",
+			"trash.restoredNeedsRestart": "Restored on disk. DSH must be restarted before the sidebar shows it (the host caches session ownership in memory).",
 			"unknown": "(untitled)",
 			"close": "Close"
 		};
@@ -571,6 +571,17 @@ window.__ModuleLoader__.load({
 		 * 拿不准时按「不是当前会话」处理，避免误触发切换。
 		 */
 		function isCurrentSession(ctx, sessionId) {
+			// 最准的一条：宿主自己用 retainedBy.mainView 判断「正在主视图显示」
+			try {
+				const info = ctx.get("sessions")?.retainInfo?.(sessionId);
+				const snapshot = info?.getSnapshot?.();
+				if (snapshot !== void 0 && snapshot !== null) {
+					const mainView = snapshot.retainedBy?.mainView ?? 0;
+					return mainView > 0;
+				}
+			} catch {
+				/* 退回下面两种判断 */
+			}
 			try {
 				const uiSession = ctx.get("uiSession");
 				const store = uiSession?.current;
@@ -616,11 +627,24 @@ window.__ModuleLoader__.load({
 						onConfirm: (done, fail) => {
 							void (async () => {
 								try {
+									// 删的是当前会话：先切走再删，避免视图停在已删除的会话上
+									if (wasCurrent) {
+										let workspaceId = null;
+										try {
+											const info = await call("/workspace-id", { sessionId });
+											workspaceId = info.workspaceId ?? null;
+										} catch {
+											workspaceId = null;
+										}
+										const nav = leaveDeletedView(pluginCtx, true, workspaceId);
+										if (!nav.ok) {
+											fail(t("delete.stuckHint", { reason: nav.reason }));
+											return;
+										}
+									}
 									const body = await call("/delete", { sessionId });
 									const warnings = Array.isArray(body.warnings) ? body.warnings : [];
 									done(warnings.length > 0 ? `${t("delete.done")} · ${warnings[0]}` : t("delete.done"));
-									// 删的是当前会话：把主视图切到该工作区的新会话
-									{ const nav = leaveDeletedView(pluginCtx, wasCurrent, body.workspaceId); if (wasCurrent && !nav.ok) showNotice(`${t("delete.stuckHint")}（${nav.reason}）`); }
 								} catch (reason) {
 									fail(t("delete.failed", { message: reason instanceof Error ? reason.message : String(reason) }));
 								}
@@ -669,8 +693,33 @@ window.__ModuleLoader__.load({
 
 			const confirm = () => {
 				if (busy) return;
-				// 删除前先记下：这批里是否有当前主视图的会话（删完就查不到了）
+				// 删除前先记下：这批里是否有当前主视图的会话
 				const wasCurrent = kind === "delete" && sessionIds.some((id) => isCurrentSession(pluginCtx, id));
+				if (wasCurrent) {
+					// 先切走再删：删完再切没有可靠的时机（宿主会把视图停在已删除的会话上）
+					const currentId = sessionIds.find((id) => isCurrentSession(pluginCtx, id)) ?? sessionIds[0];
+					void (async () => {
+						let workspaceId = null;
+						try {
+							const info = await call("/workspace-id", { sessionId: currentId });
+							workspaceId = info.workspaceId ?? null;
+						} catch {
+							workspaceId = null;
+						}
+						const nav = leaveDeletedView(pluginCtx, true, workspaceId);
+						if (!nav.ok) {
+							setError(t("delete.stuckHint", { reason: nav.reason }));
+							return;
+						}
+						runDelete();
+					})();
+					return;
+				}
+				runDelete();
+			};
+
+			const runDelete = () => {
+				if (busy) return;
 				setBusy(true);
 				setError(null);
 				void (async () => {
@@ -716,7 +765,6 @@ window.__ModuleLoader__.load({
 							showNotice(failed > 0
 								? t("delete.partial", { ok: deleted, failed })
 								: (allWarnings.length > 0 ? `${t("delete.doneMany", { n: deleted })} · ${allWarnings[0]}` : t("delete.doneMany", { n: deleted })));
-							{ const nav = leaveDeletedView(pluginCtx, wasCurrent, workspaceId); if (wasCurrent && !nav.ok) showNotice(`${t("delete.stuckHint")}（${nav.reason}）`); }
 							return;
 						}
 						const body = await call("/delete", { sessionId: sessionIds[0] });
@@ -724,7 +772,6 @@ window.__ModuleLoader__.load({
 						onClose();
 						bumpData();
 						showNotice(list.length > 0 ? `${t("delete.done")} · ${list[0]}` : t("delete.done"));
-						{ const nav = leaveDeletedView(pluginCtx, wasCurrent, body.workspaceId); if (wasCurrent && !nav.ok) showNotice(`${t("delete.stuckHint")}（${nav.reason}）`); }
 					} catch (reason) {
 						setError(reason instanceof Error ? reason.message : String(reason));
 						setBusy(false);
@@ -884,7 +931,7 @@ function RecycleToast() {
 
 			const restore = (item) => run(async () => {
 				await call("/restore", { entry: item.entry, sessionId: item.id });
-				showNotice(t("hint.refresh"));
+				showNotice(t("trash.restoredNeedsRestart"));
 			});
 			const purge = (item) => {
 				openConfirm({ kind: "purge", entry: item.entry, sessionId: item.id, title: item.title });

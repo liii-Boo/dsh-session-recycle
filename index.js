@@ -622,6 +622,15 @@ function registerRoutes(webServer, fiber, ctx) {
     return { ok: true, candidates: idleCandidates(days, emptyOnly) };
   }));
 
+  /** 查会话所属工作区 id：客户端在删除「当前会话」前先切走，需要它。 */
+  route('/workspace-id', postRoute(async (body) => {
+    const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : '';
+    if (!SESSION_ID_RE.test(sessionId)) return { ok: false, code: 'invalid', error: 'sessionId 不合法' };
+    const meta = readProjMeta(sessionId);
+    const workspaceId = await resolveWorkspaceId(ctx, meta.cwd);
+    return { ok: true, workspaceId };
+  }));
+
   /** 回收站条目（面板刷新用）。 */
   route('/trash', postRoute(async () => ({ ok: true, trash: listTrash() })));
 }
