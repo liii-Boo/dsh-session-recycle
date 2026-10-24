@@ -309,8 +309,31 @@ function readSessionFlags(ctx, sessionId) {
   return { archived: file.archived.has(sessionId), pinned: file.pinned.has(sessionId), source: 'file' };
 }
 
-/** 会话所属工作区 id：先问服务，再按路径匹配登记表。 */
-async function resolveWorkspaceId(ctx, cwd) {
+/**
+ * 宿主认识的全部会话 id（含自定义存储根目录里的）。
+ *
+ * 我们只扫 `DSH_HOME/sessions`，而 jsonl 持久化支持把 root 配到别处。
+ * 那种会话我们看不见，但它的投影缓存仍在默认目录 —— 不把宿主这份名单排除掉，
+ * 它就会被判成孤儿，清理时缓存和登记一起被删。
+ *
+ * @returns id 数组；宿主未提供持久化服务或读取失败时返回 null（表示“不知道”）
+ */
+async function hostKnownSessionIds(ctx) {
+  const persistence = ctx.get('sessionPersistence');
+  if (persistence === void 0 || typeof persistence.list !== 'function') return null;
+  try {
+    const records = await persistence.list();
+    if (!Array.isArray(records)) return null;
+    const ids = records
+      .map((record) => record?.header?.id)
+      .filter((id) => typeof id === 'string' && id !== '');
+    return [...new Set(ids)];
+  } catch {
+    return null;
+  }
+}
+
+/** 会话所属工作区 id：先问服务，再按路径匹配登记表。 */async function resolveWorkspaceId(ctx, cwd) {
   if (typeof cwd !== 'string' || cwd === '') return null;
   const registry = ctx.get('workspaceRegistry');
   if (registry !== void 0 && typeof registry.resolveByPath === 'function') {
@@ -501,7 +524,9 @@ function registerRoutes(webServer, fiber, ctx) {
 
   /** 面板数据：会话、孤儿、回收站、扫描是否降级。 */
   route('/state', postRoute(async () => {
-    const state = snapshot();
+    // 宿主已知的会话不算孤儿：它们的日志可能在自定义存储根目录里，我们扫不到
+    const knownIds = await hostKnownSessionIds(ctx);
+    const state = snapshot({ knownIds: knownIds ?? void 0 });
     const { home, sessions, trash, registry, proj } = locations();
     return { ok: true, platform: process.platform, ...state, locations: { home, sessions, trash, registry, proj } };
   }));
@@ -663,19 +688,32 @@ function registerRoutes(webServer, fiber, ctx) {
       ? body.sessionIds.filter((id) => typeof id === 'string' && SESSION_ID_RE.test(id))
       : null;
     const registry = ctx.get('workspaceRegistry');
-    const result = cleanOrphans(ids, { stripRegistry: registry === void 0 });
-    if (result.ok !== true || registry === void 0) return result;
-    const failed = [];
-    for (const id of result.registryIds) {
-      const forgotten = await forget(ctx, id);
-      if (!forgotten.detached || !forgotten.unarchived || !forgotten.unpinned) failed.push(id);
+    // 宿主已知的会话（可能在自定义存储根目录）不能当孤儿清掉
+    const knownIds = await hostKnownSessionIds(ctx);
+    const result = cleanOrphans(ids, { stripRegistry: registry === void 0, knownIds: knownIds ?? void 0 });
+    if (result.code === 'scan-degraded') return result;
+
+    const registryFailed = [];
+    if (registry !== void 0) {
+      for (const id of result.registryIds) {
+        const forgotten = await forget(ctx, id);
+        if (!forgotten.detached || !forgotten.unarchived || !forgotten.unpinned) registryFailed.push(id);
+      }
     }
+    // 缓存删除失败（权限/占用）与登记清理失败都要如实上报，不能因为别的步骤成功就报整体成功
+    const cacheFailures = Array.isArray(result.failed) ? result.failed : [];
+    const ok = cacheFailures.length === 0 && registryFailed.length === 0;
+    const reasons = [];
+    if (cacheFailures.length > 0) reasons.push(`${cacheFailures.length} 个缓存文件未能删除（可能被占用或权限不足）`);
+    if (registryFailed.length > 0) reasons.push(`${registryFailed.length} 个孤儿登记未清理成功`);
     return {
       ...result,
-      ok: failed.length === 0,
-      registryUpdated: result.registryIds.length > failed.length,
-      failed,
-      ...(failed.length > 0 ? { code: 'partial', error: `${failed.length} 个孤儿登记未清理成功，请重试` } : {}),
+      ok,
+      registryUpdated: registry !== void 0 ? result.registryIds.length > registryFailed.length : result.registryUpdated,
+      // 兼容既有契约：failed 是 id 数组；具体原因放在 failures 里
+      failed: [...cacheFailures.map((item) => item.id), ...registryFailed],
+      failures: [...cacheFailures, ...registryFailed.map((id) => ({ id, error: '登记未清理' }))],
+      ...(ok ? {} : { code: 'partial', error: `${reasons.join('；')}，请重试` }),
     };
   }));
 

@@ -1,6 +1,6 @@
 {
   "name": "@liii-boo/dsh-session-recycle",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "type": "module",
   "description": "会话回收站：右键删除会话进回收站（可还原）、批量删除、按天数清理空会话、诊断并清理孤儿缓存。 · Session recycle bin for DeepSeek Harness: right-click delete into a recoverable bin, batch delete, idle cleanup, and orphan-cache diagnosis.",
   "license": "MIT",

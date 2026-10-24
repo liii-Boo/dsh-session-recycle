@@ -681,3 +681,71 @@ test('传了 sessionDir 但没声明 targetTrusted 时仍做根目录校验', as
   assert.equal(fs.existsSync(outside), false);
   assert.equal(fs.existsSync(path.join(home, 'trash', removed.entry, MAIN, 'session')), true);
 });
+
+// ── 1.0.3 回归：自定义存储根目录 / 缓存删除失败 ────────────────────────
+
+test('宿主已知但扫不到的会话，不算孤儿（自定义存储根目录）', async () => {
+  const home = fixture();
+  // 模拟：会话日志在自定义根目录（DSH_HOME 之外），默认目录里只有它的投影缓存
+  fs.rmSync(path.join(home, 'sessions', SLUG, MAIN), { recursive: true, force: true });
+
+  const withoutKnown = snapshot();
+  assert.equal(
+    withoutKnown.orphans.cacheOnly.some((item) => item.id === MAIN),
+    true,
+    '不告诉宿主名单时，它确实会被判成孤儿（这是修复前的行为）',
+  );
+  assert.equal(
+    withoutKnown.orphans.registryOnly.includes(MAIN),
+    true,
+    '登记也会被判成孤儿',
+  );
+
+  const withKnown = snapshot({ knownIds: [MAIN] });
+  assert.equal(
+    withKnown.orphans.cacheOnly.some((item) => item.id === MAIN),
+    false,
+    '宿主已知的会话，缓存不能被当孤儿',
+  );
+  assert.equal(
+    withKnown.orphans.registryOnly.includes(MAIN),
+    false,
+    '宿主已知的会话，登记也不能被当孤儿',
+  );
+});
+
+test('缓存删不掉时返回失败并给出原因，而不是 ok:true', () => {
+  const home = fixture();
+  // 造一个只有缓存、没有日志的孤儿
+  fs.rmSync(path.join(home, 'sessions', SLUG, MAIN), { recursive: true, force: true });
+
+  const result = cleanOrphans(null, {
+    stripRegistry: false,
+    removeFile: () => {
+      const error = new Error('EACCES: permission denied');
+      error.code = 'EACCES';
+      throw error;
+    },
+  });
+
+  assert.equal(result.ok, false, '删不掉就不能报成功');
+  assert.equal(result.code, 'partial');
+  assert.equal(result.removedCaches, 0);
+  assert.equal(result.failed.length >= 1, true);
+  assert.match(result.failed[0].error, /EACCES/);
+  assert.match(result.error, /未能删除/);
+
+  // 文件确实还在
+  assert.equal(fs.existsSync(path.join(home, 'storages', 'session_projcache', 'sessions', `${MAIN}.json`)), true);
+});
+
+test('缓存删得掉时仍然正常成功', () => {
+  const home = fixture();
+  fs.rmSync(path.join(home, 'sessions', SLUG, MAIN), { recursive: true, force: true });
+
+  const result = cleanOrphans(null, { stripRegistry: false });
+  assert.equal(result.ok, true);
+  assert.equal(result.removedCaches >= 1, true);
+  assert.equal(result.failed.length, 0);
+  assert.equal(fs.existsSync(path.join(home, 'storages', 'session_projcache', 'sessions', `${MAIN}.json`)), false);
+});

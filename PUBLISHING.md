@@ -1,6 +1,6 @@
 # 发布手记（维护者用）
 
-当前工作版本为 **1.0.2**，修复还原目标目录校验与孤儿清理的成功判断（1.0.1 的后续修复）。
+当前工作版本为 **1.0.3**，修复孤儿判定未覆盖自定义存储根目录、以及缓存删不掉却报成功的问题。
 本地打包不代表已经发布。公开版本以 [Releases](https://github.com/liii-Boo/dsh-session-recycle/releases) 为准。
 
 ## 发版流程
@@ -13,18 +13,18 @@ npm run audit
 node --check client.js
 node --check index.js
 npm pack
-npm run verify:release -- .\liii-boo-dsh-session-recycle-1.0.2.tgz
+npm run verify:release -- .\liii-boo-dsh-session-recycle-1.0.3.tgz
 ```
 
 2. 审阅改动，合并修复分支并推送；确认 `package.json` 版本与待发布 tag 一致。
 3. 为已验证提交创建新 tag，不移动或强推已有 tag：
 
 ```powershell
-git tag -a v1.0.2 -m "1.0.2"
-git push origin v1.0.2
+git tag -a v1.0.3 -m "1.0.3"
+git push origin v1.0.3
 ```
 
-4. 在 GitHub 创建 `v1.0.2` Release，上传本次校验过的 tgz，正文参考 `scripts/release-body.md`。
+4. 在 GitHub 创建 `v1.0.3` Release，上传本次校验过的 tgz，正文参考 `scripts/release-body.md`。
    旧版本和旧附件保留。若使用 `scripts/release-update.mjs`，已有同名 Release 会被拒绝，不能覆盖。
 5. 发布后运行 `npm run verify:release`，下载当前 package 版本的附件并逐文件比对源码。
    未发布前请传本地 tgz 路径；404 表示附件不存在，不能视为验证通过。

@@ -187,7 +187,7 @@ DSH 的子代理会话在磁盘上的目录名是**裸 uuid**（如 `8445b302-d5
 ## 开发
 
 ```powershell
-npm test                     # 65 个测试：存储、路由与客户端行为
+npm test                     # 68 个测试：存储、路由与客户端行为
 npm run audit                # 结构自审 + hooks 顺序 + 发布一致性（12 项）
 npm run verify:release -- <tgz 路径>   # 对比本地安装包与当前源码
 npm run verify:release       # 发版后下载当前 package 版本附件并对比源码
