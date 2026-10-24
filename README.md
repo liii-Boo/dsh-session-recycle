@@ -7,7 +7,7 @@
 右键删除 → 进回收站 → 随时还原。删得干净，也留得住回旋的余地。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![DSH](https://img.shields.io/badge/DSH-0.2.0--rc.1%20~%200.2.1--rc.2-0f766e.svg)](#环境要求)
+[![DSH](https://img.shields.io/badge/DSH-0.2.1--rc.2-0f766e.svg)](#环境要求)
 [![Release](https://img.shields.io/github/v/release/liii-Boo/dsh-session-recycle?color=%234D6BFE&label=release)](https://github.com/liii-Boo/dsh-session-recycle/releases)
 [![Stars](https://img.shields.io/github/stars/liii-Boo/dsh-session-recycle?color=f5c542)](https://github.com/liii-Boo/dsh-session-recycle/stargazers)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-6b7280)](#环境要求)
@@ -83,7 +83,7 @@ DSH 只有「归档」，没有「删除」——会话层的接口里根本没�
 
 **方式一：从 Release 安装**（推荐，不需要 npm 账号）
 
-1. 打开 [Releases](https://github.com/liii-Boo/dsh-session-recycle/releases/latest)，下载 `liii-boo-dsh-session-recycle-1.0.0.tgz`
+1. 打开 [Releases](https://github.com/liii-Boo/dsh-session-recycle/releases/latest)，下载对应版本的 `.tgz`。本地修复版为 `liii-boo-dsh-session-recycle-1.0.1.tgz`；是否已发布以 Release 页面为准。
 2. 执行：
 
 ```powershell
@@ -138,7 +138,7 @@ dsh plugin --profile <你的 profile> add https://github.com/liii-Boo/dsh-sessio
 
 | 项 | 要求 |
 |---|---|
-| DSH | `0.2.0-rc.1` / `0.2.0-rc.2` / `0.2.1-rc.1` / `0.2.1-rc.2`（在 `0.2.1-rc.2` 上开发和验证） |
+| DSH | 本次修复在 `0.2.1-rc.2` 上验证；其他版本需要重新验收，尤其是已加载会话的运行时释放 |
 | Node | `^22.19.0 \|\| >=24.0.0`（只是开发/测试需要，插件本体跑在宿主里） |
 | 平台 | Windows / macOS / Linux（宿主是 Electron 也行；文件占用重试对 Windows 有专门处理） |
 
@@ -148,14 +148,16 @@ dsh plugin --profile <你的 profile> add https://github.com/liii-Boo/dsh-sessio
 
 ```
 1. 走宿主的 workspace/session-stop（jobs / subagent / schedule 都挂在这条通道上）
-2. 等 session/disposed 级联落地，再把 runtime detach
+2. 确认后台活动停止，落盘日志，再释放完整 Agent 生命周期（关闭日志句柄并摘除运行时）
 3. 日志目录 + 投影缓存 → ~/.dsh/trash/<时间戳>/<id>/
 4. 复查缓存有没有被 dispose 的回写重新写出来，有就再搬一次
-5. 登记表摘除（走 workspaceRegistry 服务，文件层兜底）+ 广播 api-session/removed
+5. 通过 WorkspaceEntity.detachSession 摘除宿主内存登记 + 广播 api-session/removed
 ```
 
 还原则相反，而且是**通过 `workspaceRegistry` 登记**，不是直接改 `workspace.json`——
 注册表以内存快照为权威，直接改文件会被宿主下一次写入覆盖。
+登记失败会将日志和缓存退回回收站，可直接重试；成功后刷新宿主会话列表，无需重启。
+孤儿登记清理也走宿主服务，仅在没有注册表服务的离线环境下直接更新文件。
 
 其余细节：文件搬运用了重试（Windows 上 detach 后句柄可能还没释放）、`meta.json` 先写
 （失败可回滚）、路径参数都过白名单（防穿越）、写操作串行化（防并发覆盖登记表）。
@@ -175,18 +177,20 @@ DSH 的子代理会话在磁盘上的目录名是**裸 uuid**（如 `8445b302-d5
 ## 已知边界
 
 - 回收站不设上限、不自动过期，占多少磁盘由你决定
-- 删掉**当前正在查看的会话**时，插件会**先切到该工作区的新会话再删**；切不过去会取消删除并提示原因
-- 还原后会调宿主的 `sessionKnown()` 重新索引并 `attachSession()` 登记：正常情况下刷新页面就能看到，
-  若侧栏仍不显示则需重启 DSH（宿主把会话归属缓存在内存里）
+- 删掉**当前正在查看的会话**时，插件会先释放主视图引用、切回新会话入口；确认切换完成后再删除
+- 还原后调用宿主的 `sessionKnown()`、`attachSession()` 和客户端 `sessions.refresh()`，立即更新列表；归档会话仍保留归档标记
+- 若文件已还原但客户端刷新失败，会明确提示；面板「刷新」可重试同步宿主列表
+- 活跃运行时释放依赖 DSH 的内部生命周期结构，已在 Windows 的 `0.2.1-rc.2` 验证；其他版本若结构不兼容，将拒绝删除并保留文件。停止、落盘或卸载失败同样不会搬走文件
 - 只处理本机 `DSH_HOME`，不涉及远程主机
 - 批量删除一次上限 **200 条**（每条要做停手与缓存复查，再多会让单次请求太慢）
 
 ## 开发
 
 ```powershell
-npm test                     # 38 个测试：存储层 30 + 路由层 8
+npm test                     # 56 个测试：存储、路由与客户端行为
 npm run audit                # 结构自审 + hooks 顺序 + 发布一致性（12 项）
-npm run verify:release       # 下载线上 Release 附件，校验修复是否在内
+npm run verify:release -- <tgz 路径>   # 对比本地安装包与当前源码
+npm run verify:release       # 发版后下载当前 package 版本附件并对比源码
 node test/lint-client.mjs client.js   # 检查 i18n 键完整性（需带文件路径）
 ```
 

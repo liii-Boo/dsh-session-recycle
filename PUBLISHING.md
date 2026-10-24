@@ -1,80 +1,39 @@
 # 发布手记（维护者用）
 
-这份文件不进 npm 包，只是仓库内的备忘。
-
-## 当前状态
-
-| 项 | 值 |
-|---|---|
-| 仓库 | https://github.com/liii-Boo/dsh-session-recycle |
-| 版本 | 1.0.0（tag `v1.0.0`） |
-| Release | 已发布，附件 `liii-boo-dsh-session-recycle-1.0.0.tgz` |
-| npm | **未发布**（`liii-Boo` 还没有 npm 账号，注册页当时打不开） |
-
-## 这台机器上的 git 配置
-
-git 装在 `D:\Git\cmd\git.exe`（不在 PATH 里，调用要写全路径）。
-仓库内已配置（只作用于这个仓库，没动全局）：
-
-```
-http.proxy      = http://127.0.0.1:7890
-https.proxy     = http://127.0.0.1:7890
-http.sslBackend = openssl
-```
-
-前两条是因为系统代理只对浏览器生效、git 直连 GitHub 会超时；
-第三条是因为走代理时 schannel 握手失败，换成 openssl 才能通。
-**如果代理换了端口，改这两行即可。**
-
-提交身份只写在本仓库：`liii-Boo <liii-Boo@users.noreply.github.com>`。
+当前工作版本为 **1.0.1**，用于修复还原后的列表同步、删除运行时释放和工作区登记问题。
+本地打包不代表已经发布。公开版本以 [Releases](https://github.com/liii-Boo/dsh-session-recycle/releases) 为准。
 
 ## 发版流程
 
-```powershell
-$git = "D:\Git\cmd\git.exe"
-$d   = "C:\Users\li\Documents\deepseek-harness\default-workspace\plugins\dsh-session-recycle"
-cd $d
+1. 运行验证和打包：
 
-# 1. 全量验证
-node --test test/recycle.test.mjs test/routes.test.mjs   # 期望 28 通过
-node test/audit.mjs .                                    # 结构自审
-node test/audit-hooks.mjs .                              # hooks 顺序
+```powershell
+npm test
+npm run audit
 node --check client.js
-node --check lib/store.mjs
-
-# 2. 提交并推送
-& $git add -A
-& $git commit -m "..."        # 中文多行建议写文件后 git commit -F，避免被当成路径
-& $git push origin main
-
-# 3. 移动 tag（对外仍是 1.0.0 这种单版本发布时）
-& $git tag -d v1.0.0
-& $git tag -a v1.0.0 -m "1.0.0"
-& $git push -f origin v1.0.0
-
-# 4. 打包并更新 Release 附件
-Get-ChildItem *.tgz | Remove-Item -Force
+node --check index.js
 npm pack
-node scripts/release-update.mjs <token> "liii-Boo/dsh-session-recycle" "v1.0.0" "<tgz>" "scripts/release-body.md"
+npm run verify:release -- .\liii-boo-dsh-session-recycle-1.0.1.tgz
 ```
 
-token 可以从 git 凭证里取，不必手抄：
+2. 审阅改动，合并修复分支并推送；确认 `package.json` 版本与待发布 tag 一致。
+3. 为已验证提交创建新 tag，不移动或强推已有 tag：
 
 ```powershell
-$req  = "protocol=https`nhost=github.com`n`n"
-$resp = $req | & $git credential fill 2>$null
-$tok  = ($resp | Where-Object { $_ -match '^password=' }) -replace '^password=',''
+git tag -a v1.0.1 -m "1.0.1"
+git push origin v1.0.1
 ```
 
-## 以后要发 npm
-
-1. 打开 https://www.npmjs.com/signup 注册（用户名建议 `liii-Boo`）
-2. 邮箱验证
-3. `npm login`，然后 `npm publish`（`publishConfig.access = public` 已配好）
-
-发布前的自检：`node test/lint-package.mjs .`（12 项，全过才能发）。
+4. 在 GitHub 创建 `v1.0.1` Release，上传本次校验过的 tgz，正文参考 `scripts/release-body.md`。
+   旧版本和旧附件保留。若使用 `scripts/release-update.mjs`，已有同名 Release 会被拒绝，不能覆盖。
+5. 发布后运行 `npm run verify:release`，下载当前 package 版本的附件并逐文件比对源码。
+   未发布前请传本地 tgz 路径；404 表示附件不存在，不能视为验证通过。
 
 ## 注意
 
-- 修改 `package.json` 的 `name` 时，`cordis.patch.yml` 里的 `name` 和 `client.js` 的模块 id 必须同步改，否则插件加载不了（`test/lint-package.mjs` 会检查这一点）。
-- `desktop` profile 由 Electron 独占，命令行 `dsh plugin --profile desktop add` 一定会被拒绝，桌面用户请在插件页安装。
+- npm 发布需要维护者自己的 npm 账号；本流程只涉及 GitHub Release。
+- 不把访问令牌写进命令参数、源码、发布说明或日志。脚本从 `GITHUB_TOKEN` 环境变量读取。
+- `desktop` profile 由 Electron 管理，请通过应用插件页安装。
+- `package.json` 的包名、`cordis.patch.yml` 和 `client.js` 模块 id 必须一致。
+- 修改后端代码需要重新加载插件或重启宿主；加载修复版之后，每次还原会话无需重启。
+- 运行时释放目前依赖 DSH `0.2.1-rc.2` 的内部生命周期 effect；升级宿主后应重新进行删除、还原、打开的真实界面验收。

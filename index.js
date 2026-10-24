@@ -8,15 +8,16 @@
  * 再叠加本插件自己的回环 + Host + Sec-Fetch-Site 检查。
  *
  * 删除顺序（顺序错了会留下半截日志或幽灵行）：
- *   1. 走宿主的 `workspaceRegistry.stopSessionActivity`（jobs/subagent/schedule 都挂在这条通道上，
+ *   1. 走宿主的 `workspace/session-stop`（jobs/subagent/schedule 都挂在这条通道上，
  *      只 cancel 一轮 turn 停不住它们）
- *   2. 等 `session/disposed` 级联落地，再把 runtime 从宿主上 detach
+ *   2. 确认活动停止、落盘日志，再释放完整运行时生命周期
  *   3. 文件系统搬家：日志目录 + 投影缓存 → ~/.dsh/trash/
  *   4. 复查缓存有没有被 dispose 的回写重新写出来，有就再搬一次
  *   5. 登记表摘除（走服务，文件层兜底）+ 广播 api-session/removed
  */
 
 import path from 'node:path';
+import { disposeAgentRuntime } from './lib/runtime.mjs';
 
 import {
   cleanOrphans,
@@ -33,7 +34,6 @@ import {
   readTrashMeta,
   restoreFromTrash,
   snapshot,
-  stripFlagsFromRegistry,
   stripFromRegistry,
   sweepReappearedCache,
   TRASH_ENTRY_RE,
@@ -221,7 +221,7 @@ function postMutation(handler) {
 /**
  * 把会话停稳。
  *
- * 顺序：宿主的 stop 通道 -> 等 dispose 级联 -> detach runtime -> 留一点时间让投影缓存落盘。
+ * 顺序：宿主 stop 通道 -> 检查活动 -> 落盘日志 -> 释放完整运行时 -> 等缓存落盘。
  * 返回的 notes 会一路带到客户端，失败不再静默。
  */
 async function quiesce(ctx, sessionId) {
@@ -229,58 +229,61 @@ async function quiesce(ctx, sessionId) {
   const registry = ctx.get('workspaceRegistry');
   const sessions = ctx.get('sessions');
   const agents = ctx.get('agents');
-
-  let live;
+  const failed = (code, error) => ({ ok: false, removed: false, code, error, notes });
   try {
-    live = sessions?.get?.(sessionId);
-  } catch {
-    live = void 0;
-  }
-  if (live === void 0) return { live: false, notes };
-
-  try {
-    if (typeof registry?.stopSessionActivity === 'function') {
-      // jobs / subagent / schedule 都挂在 workspace/session-stop 上，比 cancel 一轮 turn 彻底
+    // 直接等待所有停止提供者，避免 registry 的归档策略吞掉停止错误。
+    if (typeof ctx.parallel === 'function') {
+      await ctx.parallel('workspace/session-stop', { sessionId });
+      notes.push('stop-dispatched');
+    } else if (typeof registry?.stopSessionActivity === 'function') {
       await registry.stopSessionActivity(sessionId);
       notes.push('stop-dispatched');
-    } else {
-      void Promise.resolve(ctx.get('sessionController')?.cancel?.({ sessionId })).catch(() => {});
+    } else if (agents?.get?.(sessionId)?.status === 'running') {
+      const controller = ctx.get('sessionController');
+      if (typeof controller?.cancel !== 'function') return failed('stop-unavailable', '宿主无法停止该会话，未删除');
+      await controller.cancel({ sessionId });
       notes.push('cancel-fallback');
     }
   } catch (error) {
-    notes.push(`stop-failed: ${String(error?.message ?? error)}`);
-  }
-
-  for (let step = 0; step < QUIESCE_MAX_STEPS; step += 1) {
-    const stillLive = (() => {
-      try {
-        return sessions?.get?.(sessionId) !== void 0;
-      } catch {
-        return false;
-      }
-    })();
-    const running = agents?.get?.(sessionId)?.status === 'running';
-    if (!stillLive) {
-      notes.push('disposed');
-      break;
-    }
-    if (!running && step > 2) break;
-    await sleep(QUIESCE_STEP_MS);
+    return failed('stop-failed', `停止会话失败，未删除：${String(error?.message ?? error)}`);
   }
 
   try {
-    const entry = sessions?.liveEntryFor?.(live);
-    if (entry !== void 0) {
-      sessions.detachEntered(entry);
-      notes.push('detached');
+    for (let step = 0; ; step += 1) {
+      const activity = typeof ctx.waterfall === 'function'
+        ? await ctx.waterfall('workspace/session-activity', { sessionId }, async () => [])
+        : [];
+      if (!Array.isArray(activity)) throw new Error('宿主返回了无法识别的活动状态');
+      if (activity.length === 0 && agents?.get?.(sessionId)?.status !== 'running') break;
+      if (step >= QUIESCE_MAX_STEPS) return failed('still-active', '会话或后台任务仍在运行，未删除；请停止后重试');
+      await sleep(QUIESCE_STEP_MS);
     }
   } catch (error) {
-    notes.push(`detach-failed: ${String(error?.message ?? error)}`);
+    return failed('activity-check-failed', `无法确认会话已停止，未删除：${String(error?.message ?? error)}`);
+  }
+
+  try {
+    const live = sessions?.get?.(sessionId);
+    const agent = agents?.get?.(sessionId);
+    if (live === void 0 && agent === void 0) return { ok: true, live: false, notes };
+    if (live !== void 0 && typeof sessions.flush === 'function') await sessions.flush(live);
+    if (agent !== void 0) {
+      // 释放完整运行时，等待日志句柄关闭；只摘 sessions 会遗留同 id 的旧 Agent。
+      await disposeAgentRuntime(agent);
+    } else if (live !== void 0) {
+      const entry = sessions?.liveEntryFor?.(live);
+      if (entry === void 0 || typeof sessions.detachEntered !== 'function') throw new Error('宿主未提供会话卸载接口');
+      await sessions.detachEntered(entry);
+    }
+    if (sessions?.get?.(sessionId) !== void 0 || agents?.get?.(sessionId) !== void 0) throw new Error('会话运行时尚未释放');
+    notes.push('detached');
+  } catch (error) {
+    return failed('detach-failed', `保存或卸载会话失败，未删除：${String(error?.message ?? error)}`);
   }
 
   // 给 dispose 触发的投影缓存落盘一个窗口（sweepReappearedCache 还会兜底复查）
   await sleep(120);
-  return { live: true, notes };
+  return { ok: true, live: true, notes };
 }
 
 /**
@@ -330,32 +333,34 @@ async function resolveWorkspaceId(ctx, cwd) {
 /** 删除后清理登记：服务优先，文件层兜底。每步结果都收进返回值，不再吞掉。 */
 async function forget(ctx, sessionId) {
   const registry = ctx.get('workspaceRegistry');
-  const result = { detached: false, unarchived: false, unpinned: false, stripped: false, event: false };
-  for (const [key, method] of [['detached', 'detachSession'], ['unarchived', 'unarchiveSession'], ['unpinned', 'unpinSession']]) {
+  const result = { detached: false, unarchived: false, unpinned: false, stripped: false, event: false, warnings: [] };
+  if (registry !== void 0) {
+    try {
+      if (typeof registry.list !== 'function') throw new Error('宿主未提供工作区列表');
+      // detachSession 属于 WorkspaceEntity。遍历所有工作区也能清掉被过滤的旧登记。
+      for (const entity of registry.list()) await entity.detachSession(sessionId);
+      result.detached = true;
+    } catch (error) {
+      result.warnings.push(`移除工作区登记失败：${String(error?.message ?? error)}`);
+    }
+  }
+  for (const [key, method] of [['unarchived', 'unarchiveSession'], ['unpinned', 'unpinSession']]) {
     try {
       if (typeof registry?.[method] === 'function') {
         await registry[method](sessionId);
         result[key] = true;
       }
-    } catch {
-      /* 单步失败不影响其余，最终由 warnings 表达 */
+    } catch (error) {
+      result.warnings.push(`清理 ${method} 标记失败：${String(error?.message ?? error)}`);
     }
   }
-  // 文件层摘除只在服务不可用或服务调用失败时做兜底：
+  // 文件层摘除只在没有注册表服务时做兜底：
   // 注册表以内存为权威，插件直接读-改-写会覆盖宿主此刻的其它改动。
-  const serviceDetached = result.detached === true;
-  if (!serviceDetached) {
+  if (registry === void 0) {
     try {
       result.stripped = stripFromRegistry([sessionId]);
     } catch {
       result.stripped = false;
-    }
-  } else if (result.unarchived !== true || result.unpinned !== true) {
-    // detach 成功但标记没清干净：只摘标记，不动归属，避免留下看不见的孤儿登记
-    try {
-      result.flagsStripped = stripFlagsFromRegistry([sessionId]);
-    } catch {
-      result.flagsStripped = false;
     }
   }
   try {
@@ -409,14 +414,22 @@ async function admitRestored(ctx, sessionId, meta) {
   if (typeof registry.sessionKnown === 'function') {
     try {
       const known = await registry.sessionKnown(sessionId);
-      if (known !== true) warnings.push('宿主仍未索引到该会话（可能需要重启 DSH）');
+      if (known !== true) return { viaService: true, registered: false, warnings: ['宿主未能识别恢复的会话日志'] };
     } catch (error) {
-      warnings.push(`刷新会话索引失败：${String(error?.message ?? error)}`);
+      return { viaService: true, registered: false, warnings: [`刷新会话索引失败：${String(error?.message ?? error)}`] };
     }
   }
 
   let entity;
-  const cwd = typeof meta?.cwd === 'string' && meta.cwd !== '' ? meta.cwd : null;
+  let cwd = typeof meta?.cwd === 'string' && meta.cwd !== '' ? meta.cwd : null;
+  if (cwd === null) {
+    // 缓存可能缺失；日志头才是工作目录的权威来源。
+    const persistence = ctx.get('sessionPersistence');
+    if (typeof persistence?.list === 'function') {
+      const stored = (await persistence.list()).find((item) => item.header?.id === sessionId);
+      cwd = stored?.header?.cwd ?? null;
+    }
+  }
   if (cwd !== null && typeof registry.resolveByPath === 'function') {
     try {
       entity = await registry.resolveByPath(cwd);
@@ -425,7 +438,7 @@ async function admitRestored(ctx, sessionId, meta) {
     }
   }
   if (entity === void 0 || entity === null) {
-    warnings.push('未能定位所属工作区，会话已还原但会出现在未分组里');
+    warnings.push('未能定位所属工作区，请确认原工作目录仍然存在后重试');
     return { viaService: true, registered: false, warnings };
   }
   try {
@@ -486,6 +499,7 @@ function registerRoutes(webServer, fiber, ctx) {
     const meta = readProjMeta(sessionId);
     const flags = readSessionFlags(ctx, sessionId);
     const quiesced = await quiesce(ctx, sessionId);
+    if (quiesced.ok !== true) return quiesced;
     const hasRegistry = ctx.get('workspaceRegistry') !== void 0;
     const result = await moveToTrash(sessionId, {
       title: meta.title,
@@ -501,7 +515,7 @@ function registerRoutes(webServer, fiber, ctx) {
     const swept = await sweepReappearedCache(result.entry, sessionId, quiesced.live === true ? 3 : 0);
     const forgotten = await forget(ctx, sessionId);
 
-    const warnings = [];
+    const warnings = [...forgotten.warnings];
     if (swept.swept > 0) warnings.push(`投影缓存被重新写出 ${swept.swept} 次，已再次搬入回收站`);
     if (forgotten.detached !== true && forgotten.stripped !== true) {
       warnings.push('登记表未能同步移除，界面可能残留该会话；请刷新或切一次工作区');
@@ -536,6 +550,11 @@ function registerRoutes(webServer, fiber, ctx) {
       const meta = readProjMeta(sessionId);
       const flags = readSessionFlags(ctx, sessionId);
       const quiesced = await quiesce(ctx, sessionId);
+      if (quiesced.ok !== true) {
+        results.push({ sessionId, ok: false, code: quiesced.code, error: quiesced.error, quiesced: quiesced.notes });
+        warnings.push(`${sessionId}：${quiesced.error}`);
+        continue;
+      }
       const result = await moveToTrash(sessionId, {
         title: meta.title,
         cwd: meta.cwd,
@@ -547,6 +566,7 @@ function registerRoutes(webServer, fiber, ctx) {
         // 批量场景下每条都要等：非 live 的会话只复查一轮，避免几百条时请求超时
         await sweepReappearedCache(result.entry, sessionId, quiesced.live === true ? 3 : 0);
         const forgotten = await forget(ctx, sessionId);
+        warnings.push(...forgotten.warnings.map((warning) => `${sessionId}：${warning}`));
         if (forgotten.detached !== true && forgotten.stripped !== true) {
           warnings.push(`${sessionId}：登记表未同步移除`);
         }
@@ -618,7 +638,21 @@ function registerRoutes(webServer, fiber, ctx) {
     const ids = Array.isArray(body.sessionIds)
       ? body.sessionIds.filter((id) => typeof id === 'string' && SESSION_ID_RE.test(id))
       : null;
-    return cleanOrphans(ids);
+    const registry = ctx.get('workspaceRegistry');
+    const result = cleanOrphans(ids, { stripRegistry: registry === void 0 });
+    if (result.ok !== true || registry === void 0) return result;
+    const failed = [];
+    for (const id of result.registryIds) {
+      const forgotten = await forget(ctx, id);
+      if (!forgotten.detached || !forgotten.unarchived || !forgotten.unpinned) failed.push(id);
+    }
+    return {
+      ...result,
+      ok: failed.length === 0,
+      registryUpdated: result.registryIds.length > failed.length,
+      failed,
+      ...(failed.length > 0 ? { code: 'partial', error: `${failed.length} 个孤儿登记未清理成功，请重试` } : {}),
+    };
   }));
 
   /** 闲置候选：按天数 + 是否只看空会话，返回可批量删的 id 列表。 */

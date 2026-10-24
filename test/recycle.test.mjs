@@ -598,6 +598,30 @@ test('只留在归档集合里的 id 会被算作孤儿登记', () => {
   );
 });
 
+test('缓存回滚失败时保留冲突备份，继续回滚日志并明确报错', async () => {
+  const home = fixture();
+  const removed = await moveToTrash(MAIN);
+  const cache = path.join(home, 'storages', 'session_projcache', 'sessions', `${MAIN}.json`);
+  const stash = path.join(home, 'trash', removed.entry, MAIN);
+  const original = fs.readFileSync(path.join(stash, `${MAIN}.json`), 'utf8');
+  fs.writeFileSync(cache, 'existing-cache');
+  const restored = await restoreFromTrash(removed.entry, MAIN, {
+    async onRestored() { throw new Error('admission failed'); },
+    async rename(from, to) {
+      if (from === cache) throw new Error('cache locked');
+      fs.renameSync(from, to);
+    },
+  });
+  assert.equal(restored.ok, false);
+  assert.match(restored.error, /部分文件回滚失败/);
+  assert.equal(fs.readFileSync(cache, 'utf8'), original);
+  const backup = fs.readdirSync(path.dirname(cache)).find((name) => name.startsWith(`${MAIN}.json.conflict-`));
+  assert.ok(backup);
+  assert.equal(fs.readFileSync(path.join(path.dirname(cache), backup), 'utf8'), 'existing-cache');
+  assert.equal(fs.existsSync(path.join(stash, 'session')), true);
+  assert.equal(fs.existsSync(path.join(home, 'sessions', SLUG, MAIN)), false);
+});
+
 test('stripFlagsFromRegistry 只摘标记，不动归属', () => {
   const home = fixture();
   const before = readRegistry();

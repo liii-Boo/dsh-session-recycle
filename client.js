@@ -50,7 +50,7 @@ window.__ModuleLoader__.load({
 			"delete.cancel": "取消",
 			"delete.pending": "正在移入回收站…",
 			"delete.progress": "已处理 {done} / {total}",
-			"delete.stuckHint": "无法自动切换到新会话（{reason}），已取消删除。请先手动点一下别的会话，再回来删这条。",
+			"delete.stuckHint": "无法离开当前会话（{reason}），已取消删除。请先手动点一下别的会话，再回来删这条。",
 			"delete.failed": "删除失败：{message}",
 			"delete.done": "已移入回收站",
 			"delete.doneMany": "已移入回收站 {n} 个",
@@ -98,7 +98,8 @@ window.__ModuleLoader__.load({
 			"action.failed": "操作失败：{message}",
 			"state.loading": "正在读取…",
 			"state.refresh": "刷新",
-			"trash.restoredNeedsRestart": "已还原到磁盘。DSH 需要重启才会在侧栏看到它（宿主把会话归属缓存在内存里）。",
+			"trash.restored": "会话已还原，列表已更新。",
+			"trash.refreshFailed": "会话文件已还原，但列表更新失败：{message}。请点击刷新重试。",
 			"unknown": "(未命名)",
 			"close": "关闭"
 		};
@@ -170,7 +171,8 @@ window.__ModuleLoader__.load({
 			"action.failed": "Action failed: {message}",
 			"state.loading": "Loading…",
 			"state.refresh": "Refresh",
-			"trash.restoredNeedsRestart": "Restored on disk. DSH must be restarted before the sidebar shows it (the host caches session ownership in memory).",
+			"trash.restored": "Session restored. The session list is up to date.",
+			"trash.refreshFailed": "Session files were restored, but the list could not be refreshed: {message}. Click Refresh to retry.",
 			"unknown": "(untitled)",
 			"close": "Close"
 		};
@@ -468,6 +470,21 @@ window.__ModuleLoader__.load({
 			return body;
 		}
 
+		/** 刷新宿主真正使用的会话列表；刷新插件自己的 state 不会更新侧栏。 */
+		async function refreshHostSessions(ctx, sessionId) {
+			const sessions = ctx?.get?.("sessions");
+			if (typeof sessions?.refresh !== "function") throw new Error("宿主未提供会话列表刷新接口");
+			for (let attempt = 0; attempt < 2; attempt += 1) {
+				await sessions.refresh();
+				const state = sessions.list?.getSnapshot?.();
+				if (state?.error) throw new Error(state.error.message ?? String(state.error));
+				if (!sessionId || state?.byId?.[sessionId] !== void 0) return;
+				// refresh 可能复用还原前发出的请求；等这一轮完成后再拉一次。
+				if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 50));
+			}
+			throw new Error("宿主列表尚未包含恢复的会话");
+		}
+
 		function fmtBytes(bytes) {
 			if (typeof bytes !== "number" || bytes <= 0) return "—";
 			const units = ["B", "KB", "MB", "GB"];
@@ -508,29 +525,38 @@ window.__ModuleLoader__.load({
 		 * @param wasCurrent - 删除前该会话是否为主视图（删完就查不到了，必须提前记下）
 		 * @param workspaceId - 宿主返回的工作区 id
 		 */
-		function leaveDeletedView(ctx, wasCurrent, workspaceId) {
+		async function leaveDeletedView(ctx, wasCurrent, workspaceId, sessionId) {
 			if (wasCurrent !== true) return { ok: true, reason: 'not-current' };
 
 			const uiWorkspace = workspaceUi ?? ctx?.get?.('uiWorkspace');
 			const hasWorkspaceId = typeof workspaceId === 'string' && workspaceId !== '';
 			const fails = [];
+			const confirmLeft = async () => {
+				for (let attempt = 0; attempt < 40; attempt += 1) {
+					if (!isCurrentSession(ctx, sessionId)) return;
+					await new Promise((resolve) => setTimeout(resolve, 50));
+				}
+				throw new Error('会话视图尚未切换');
+			};
 
 			if (uiWorkspace === void 0 || uiWorkspace === null) fails.push('no-uiWorkspace');
 			else if (!hasWorkspaceId) fails.push('no-workspaceId');
 
 			if (uiWorkspace !== void 0 && uiWorkspace !== null) {
-				if (hasWorkspaceId && typeof uiWorkspace.startSession === 'function') {
+				// 使用宿主归档当前会话时的同一入口，先释放主视图引用。
+				if (typeof uiWorkspace.clearMain === 'function') {
 					try {
-						uiWorkspace.startSession(workspaceId);
-						return { ok: true, reason: 'startSession' };
+						await uiWorkspace.clearMain();
+						await confirmLeft();
+						return { ok: true, reason: 'clearMain' };
 					} catch (error) {
-						fails.push('startSession:' + (error?.message ?? 'error'));
-						console.warn(`${PKG}: startSession 失败，改用 openWorkspace`, error);
+						fails.push('clearMain:' + (error?.message ?? 'error'));
 					}
 				}
 				if (hasWorkspaceId && typeof uiWorkspace.openWorkspace === 'function') {
 					try {
-						uiWorkspace.openWorkspace(workspaceId);
+						await uiWorkspace.openWorkspace(workspaceId);
+						await confirmLeft();
 						return { ok: true, reason: 'openWorkspace' };
 					} catch (error) {
 						fails.push('openWorkspace:' + (error?.message ?? 'error'));
@@ -549,6 +575,7 @@ window.__ModuleLoader__.load({
 				});
 				if (target !== void 0) {
 					target.click();
+					await confirmLeft();
 					return { ok: true, reason: 'click-new-session' };
 				}
 				fails.push('no-button');
@@ -577,7 +604,7 @@ window.__ModuleLoader__.load({
 				const snapshot = info?.getSnapshot?.();
 				if (snapshot !== void 0 && snapshot !== null) {
 					const mainView = snapshot.retainedBy?.mainView ?? 0;
-					return mainView > 0;
+					if (mainView > 0) return true;
 				}
 			} catch {
 				/* 退回下面两种判断 */
@@ -636,7 +663,7 @@ window.__ModuleLoader__.load({
 										} catch {
 											workspaceId = null;
 										}
-										const nav = leaveDeletedView(pluginCtx, true, workspaceId);
+										const nav = await leaveDeletedView(pluginCtx, true, workspaceId, sessionId);
 										if (!nav.ok) {
 											fail(t("delete.stuckHint", { reason: nav.reason }));
 											return;
@@ -706,7 +733,7 @@ window.__ModuleLoader__.load({
 						} catch {
 							workspaceId = null;
 						}
-						const nav = leaveDeletedView(pluginCtx, true, workspaceId);
+						const nav = await leaveDeletedView(pluginCtx, true, workspaceId, currentId);
 						if (!nav.ok) {
 							setError(t("delete.stuckHint", { reason: nav.reason }));
 							return;
@@ -930,8 +957,15 @@ function RecycleToast() {
 			};
 
 			const restore = (item) => run(async () => {
-				await call("/restore", { entry: item.entry, sessionId: item.id });
-				showNotice(t("trash.restoredNeedsRestart"));
+				const body = await call("/restore", { entry: item.entry, sessionId: item.id });
+				try {
+					await refreshHostSessions(pluginCtx, item.id);
+				} catch (reason) {
+					refresh();
+					throw new Error(t("trash.refreshFailed", { message: reason.message ?? String(reason) }));
+				}
+				const warnings = Array.isArray(body.warnings) ? body.warnings : [];
+				showNotice([t("trash.restored"), ...warnings].join(" · "));
 			});
 			const purge = (item) => {
 				openConfirm({ kind: "purge", entry: item.entry, sessionId: item.id, title: item.title });
@@ -1052,7 +1086,7 @@ function RecycleToast() {
 					h("button", { className: "dsr-tab", "data-active": String(tab === "orphans"), onClick: () => setTab("orphans") },
 						`${t("tab.orphans")} (${cacheOnly.length + registryOnly.length})`),
 					h("div", { className: "dsr-spacer" }),
-					h(primitives.Button, { variant: "outline", disabled: busy || loading, onClick: () => refresh() }, t("state.refresh"))),
+					h(primitives.Button, { variant: "outline", disabled: busy || loading, onClick: () => run(() => refreshHostSessions(pluginCtx)) }, t("state.refresh"))),
 
 				loading && h("div", { className: "dsr-status" }, t("state.loading")),
 				state?.degraded === true && h("div", { className: "dsr-error", role: "alert" },

@@ -89,6 +89,7 @@ async function boot(services = {}) {
     inject: () => {},
     emit: () => {},
     logger: { warn: () => {} },
+    ...(services.$context ?? {}),
   };
   const webServer = {
     register: (route) => {
@@ -228,6 +229,7 @@ test('还原时先让宿主重新索引（sessionKnown），再 attachSession �
   fixture();
   const calls = [];
   const registry = {
+    list: () => [{ detachSession: async () => {} }],
     async sessionKnown(id) {
       calls.push('sessionKnown');
       void id;
@@ -263,4 +265,155 @@ test('还原时先让宿主重新索引（sessionKnown），再 attachSession �
     'sessionKnown 必须在 attachSession 之前',
   );
   assert.equal(restored.payload.admission?.registered, true);
+});
+
+test('删除通过工作区实体摘除登记，后续宿主写盘不会复活旧 id', async () => {
+  const home = fixture();
+  const file = path.join(home, 'storages', 'workspace.json');
+  const memory = JSON.parse(fs.readFileSync(file));
+  let detached = 0;
+  const save = () => writeJson(file, memory);
+  const registry = {
+    archivedSessionIds: [], pinnedSessionIds: [],
+    list: () => [{ async detachSession(id) {
+      detached++;
+      memory.tables.workspaces['ws-1'].sessionIds = memory.tables.workspaces['ws-1'].sessionIds.filter((value) => value !== id);
+      save();
+    } }],
+    async unarchiveSession() {}, async unpinSession() {},
+  };
+  const routes = await boot({ workspaceRegistry: registry });
+  const result = await call(routes, '/delete', { sessionId: MAIN });
+  assert.equal(result.payload.ok, true);
+  assert.equal(result.payload.forgotten.detached, true);
+  assert.equal(detached, 1);
+  save();
+  assert.deepEqual(JSON.parse(fs.readFileSync(file)).tables.workspaces['ws-1'].sessionIds, []);
+});
+
+test('宿主登记调用失败时不直接覆盖 workspace.json', async () => {
+  const home = fixture();
+  const file = path.join(home, 'storages', 'workspace.json');
+  const before = fs.readFileSync(file, 'utf8');
+  const routes = await boot({ workspaceRegistry: {
+    list: () => [{ async detachSession() { throw new Error('domain unavailable'); } }],
+    async unarchiveSession() {}, async unpinSession() {},
+  } });
+  const result = await call(routes, '/delete', { sessionId: MAIN });
+  assert.equal(result.payload.ok, true, '日志已进入回收站，登记失败应明确警告');
+  assert.match(result.payload.warnings.join(' '), /domain unavailable/);
+  assert.equal(fs.readFileSync(file, 'utf8'), before);
+});
+
+test('停止会话失败：单条和批量都不移动文件', async () => {
+  const home = fixture();
+  const routes = await boot({ workspaceRegistry: { async stopSessionActivity() { throw new Error('stop denied'); } } });
+  const single = await call(routes, '/delete', { sessionId: MAIN });
+  assert.equal(single.payload.ok, false);
+  assert.equal(single.payload.code, 'stop-failed');
+  const batch = await call(routes, '/delete-many', { sessionIds: [MAIN] });
+  assert.equal(batch.payload.deleted, 0);
+  assert.equal(batch.payload.failed, 1);
+  assert.equal(fs.existsSync(path.join(home, 'sessions', SLUG, MAIN)), true);
+  assert.equal(fs.existsSync(path.join(home, 'trash')), false);
+});
+
+test('无法检查后台活动时拒绝删除，不能把未知当作已停止', async () => {
+  const home = fixture();
+  const routes = await boot({ $context: { async waterfall() { throw new Error('activity unavailable'); } } });
+  const result = await call(routes, '/delete', { sessionId: MAIN });
+  assert.equal(result.payload.code, 'activity-check-failed');
+  assert.equal(fs.existsSync(path.join(home, 'sessions', SLUG, MAIN)), true);
+});
+
+test('后台活动停止超时仍保留日志', async () => {
+  const home = fixture();
+  const routes = await boot({
+    $context: { async parallel() {}, async waterfall() { return [{ kind: 'job' }]; } },
+  });
+  const result = await call(routes, '/delete', { sessionId: MAIN });
+  assert.equal(result.payload.code, 'still-active');
+  assert.equal(fs.existsSync(path.join(home, 'sessions', SLUG, MAIN)), true);
+});
+
+test('运行时卸载失败仍保留日志', async () => {
+  const home = fixture();
+  const live = {};
+  const routes = await boot({ sessions: {
+    get: () => live, liveEntryFor: () => live,
+    detachEntered() { throw new Error('busy'); },
+  } });
+  const result = await call(routes, '/delete', { sessionId: MAIN });
+  assert.equal(result.payload.code, 'detach-failed');
+  assert.equal(fs.existsSync(path.join(home, 'sessions', SLUG, MAIN)), true);
+});
+
+test('删除等待完整 Agent 生命周期结束和日志落盘', async () => {
+  fixture();
+  const order = [];
+  let live = {};
+  const scopeMeta = {};
+  const dispose = async () => { order.push('dispose'); live = undefined; agent = undefined; };
+  dispose[Symbol.for('cordis.effect')] = { label: `agentLoop.scope(${MAIN})`, children: [scopeMeta] };
+  const rawDispose = () => { throw new Error('不能仅释放 scope'); };
+  rawDispose[Symbol.for('cordis.effect')] = scopeMeta;
+  let agent = { id: MAIN, status: 'idle', scope: { rawDispose }, ctx: { fiber: { parent: { fiber: { _disposables: [dispose] } } } } };
+  const routes = await boot({
+    sessions: { get: () => live, async flush() { order.push('flush'); } },
+    agents: { get: () => agent },
+  });
+  const result = await call(routes, '/delete', { sessionId: MAIN });
+  assert.equal(result.payload.ok, true, JSON.stringify(result.payload));
+  assert.deepEqual(order, ['flush', 'dispose']);
+});
+
+test('宿主生命周期结构不兼容时保留日志和运行时', async () => {
+  const home = fixture();
+  const live = {};
+  const routes = await boot({
+    sessions: { get: () => live, async flush() {} },
+    agents: { get: () => ({ id: MAIN, status: 'idle', scope: { dispose() { throw new Error('不能只释放 scope'); } } }) },
+  });
+  const result = await call(routes, '/delete', { sessionId: MAIN });
+  assert.equal(result.payload.code, 'detach-failed');
+  assert.match(result.payload.error, /不支持安全释放/);
+  assert.equal(fs.existsSync(path.join(home, 'sessions', SLUG, MAIN)), true);
+});
+
+test('孤儿清理更新宿主内存和磁盘登记', async () => {
+  const home = fixture();
+  fs.rmSync(path.join(home, 'sessions', SLUG, MAIN), { recursive: true });
+  const file = path.join(home, 'storages', 'workspace.json');
+  const memory = JSON.parse(fs.readFileSync(file));
+  const calls = [];
+  const registry = {
+    list: () => [{ async detachSession(id) {
+      calls.push('detach');
+      memory.tables.workspaces['ws-1'].sessionIds = memory.tables.workspaces['ws-1'].sessionIds.filter((value) => value !== id);
+    } }],
+    async unarchiveSession() { calls.push('unarchive'); },
+    async unpinSession() { calls.push('unpin'); },
+  };
+  const routes = await boot({ workspaceRegistry: registry });
+  const result = await call(routes, '/clean-orphans', {});
+  assert.equal(result.payload.ok, true);
+  writeJson(file, memory);
+  assert.deepEqual(calls, ['detach', 'unarchive', 'unpin']);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file)).tables.workspaces['ws-1'].sessionIds, []);
+});
+
+test('还原登记失败：保留可重试的回收站条目，不报假成功', async () => {
+  const home = fixture();
+  const routes = await boot({ workspaceRegistry: {
+    list: () => [{ async detachSession() {} }],
+    async sessionKnown() { return true; },
+    async resolveByPath() { return { id: 'ws-1', async attachSession() { throw new Error('attach denied'); } }; },
+  } });
+  const deleted = await call(routes, '/delete', { sessionId: MAIN });
+  const restored = await call(routes, '/restore', { entry: deleted.payload.entry, sessionId: MAIN });
+  assert.equal(restored.payload.ok, false);
+  assert.match(restored.payload.error, /attach denied/);
+  assert.equal(fs.existsSync(path.join(home, 'sessions', SLUG, MAIN)), false);
+  assert.equal(fs.existsSync(path.join(home, 'trash', deleted.payload.entry, MAIN, 'session')), true);
+  assert.equal(fs.existsSync(path.join(home, 'trash', deleted.payload.entry, MAIN, `${MAIN}.json`)), true);
 });
