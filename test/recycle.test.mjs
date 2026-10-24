@@ -635,3 +635,49 @@ test('stripFlagsFromRegistry 只摘标记，不动归属', () => {
   assert.equal(after.sessionIds.includes(ARCHIVED), true, '归属不应被删');
   void home;
 });
+
+test('还原拒绝 meta.json 里被篡改到会话根目录之外的 sessionDir', async () => {
+  const home = fixture();
+  const removed = await moveToTrash(MAIN, { title: '第一个会话' });
+  assert.equal(removed.ok, true);
+  const metaFile = path.join(home, 'trash', removed.entry, MAIN, 'meta.json');
+  const original = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
+
+  const outside = path.join(home, 'elsewhere', MAIN);
+  const tooShallow = path.join(home, 'sessions', MAIN);
+  const tooDeep = path.join(home, 'sessions', SLUG, 'nested', MAIN);
+  const traversal = `${path.join(home, 'sessions', SLUG)}${path.sep}..${path.sep}..${path.sep}x${path.sep}${MAIN}`;
+  for (const bad of [outside, tooShallow, tooDeep, traversal]) {
+    fs.writeFileSync(metaFile, JSON.stringify({ ...original, sessionDir: bad }), 'utf8');
+    const restored = await restoreFromTrash(removed.entry, MAIN);
+    assert.equal(restored.ok, false, bad);
+    assert.equal(restored.code, 'invalid-target', bad);
+    assert.equal(fs.existsSync(bad), false, bad);
+  }
+  // 回收站条目原样保留，改回合法路径后可以正常还原
+  assert.equal(fs.existsSync(path.join(home, 'trash', removed.entry, MAIN, 'session')), true);
+  fs.writeFileSync(metaFile, JSON.stringify(original), 'utf8');
+  const restored = await restoreFromTrash(removed.entry, MAIN);
+  assert.equal(restored.ok, true);
+  assert.equal(fs.existsSync(path.join(home, 'sessions', SLUG, MAIN, 'session.v4.jsonl.zstd')), true);
+});
+
+test('宿主显式提供的还原目录不受会话根目录约束', async () => {
+  const home = fixture();
+  const removed = await moveToTrash(MAIN, { title: '第一个会话' });
+  const hostRoot = path.join(home, 'custom-root', SLUG, MAIN);
+  const restored = await restoreFromTrash(removed.entry, MAIN, { sessionDir: hostRoot, targetTrusted: true });
+  assert.equal(restored.ok, true);
+  assert.equal(fs.existsSync(path.join(hostRoot, 'session.v4.jsonl.zstd')), true);
+});
+
+test('传了 sessionDir 但没声明 targetTrusted 时仍做根目录校验', async () => {
+  const home = fixture();
+  const removed = await moveToTrash(MAIN, { title: '第一个会话' });
+  const outside = path.join(home, 'custom-root', SLUG, MAIN);
+  const restored = await restoreFromTrash(removed.entry, MAIN, { sessionDir: outside });
+  assert.equal(restored.ok, false);
+  assert.equal(restored.code, 'invalid-target');
+  assert.equal(fs.existsSync(outside), false);
+  assert.equal(fs.existsSync(path.join(home, 'trash', removed.entry, MAIN, 'session')), true);
+});

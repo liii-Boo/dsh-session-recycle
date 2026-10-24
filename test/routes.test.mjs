@@ -417,3 +417,120 @@ test('还原登记失败：保留可重试的回收站条目，不报假成功',
   assert.equal(fs.existsSync(path.join(home, 'trash', deleted.payload.entry, MAIN, 'session')), true);
   assert.equal(fs.existsSync(path.join(home, 'trash', deleted.payload.entry, MAIN, `${MAIN}.json`)), true);
 });
+
+test('孤儿清理：宿主缺少 unpinSession 且没有置顶残留时不算失败', async () => {
+  const home = fixture();
+  fs.rmSync(path.join(home, 'sessions', SLUG, MAIN), { recursive: true });
+  const registry = {
+    list: () => [{ async detachSession() {} }],
+    async unarchiveSession() {},
+    archivedSessionIds: [],
+    pinnedSessionIds: [],
+  };
+  const routes = await boot({ workspaceRegistry: registry });
+  const result = await call(routes, '/clean-orphans', {});
+  assert.equal(result.payload.ok, true, JSON.stringify(result.payload));
+  assert.deepEqual(result.payload.failed, []);
+});
+
+test('孤儿清理：宿主缺少 unpinSession 但确实残留置顶标记时如实报失败', async () => {
+  const home = fixture();
+  fs.rmSync(path.join(home, 'sessions', SLUG, MAIN), { recursive: true });
+  const registry = {
+    list: () => [{ async detachSession() {} }],
+    async unarchiveSession() {},
+    archivedSessionIds: [],
+    pinnedSessionIds: [MAIN],
+  };
+  const routes = await boot({ workspaceRegistry: registry });
+  const result = await call(routes, '/clean-orphans', {});
+  assert.equal(result.payload.ok, false);
+  assert.deepEqual(result.payload.failed, [MAIN]);
+});
+
+test('还原归档会话只恢复归档、不再调用 pinSession（宿主里两者互斥）', async () => {
+  fixture();
+  const calls = [];
+  const registry = {
+    list: () => [{ async detachSession() {} }],
+    async sessionKnown() { return true; },
+    async resolveByPath() { return { id: 'ws-1', async attachSession() {} }; },
+    async archiveSession() { calls.push('archive'); },
+    async pinSession() { calls.push('pin'); throw new Error('archived session cannot be pinned'); },
+    async unarchiveSession() {},
+    async unpinSession() {},
+    archivedSessionIds: [MAIN],
+    pinnedSessionIds: [MAIN],
+  };
+  const routes = await boot({ workspaceRegistry: registry });
+  const del = await call(routes, '/delete', { sessionId: MAIN });
+  assert.equal(del.payload.ok, true);
+  const restored = await call(routes, '/restore', { entry: del.payload.entry, sessionId: MAIN });
+  assert.equal(restored.payload.ok, true);
+  assert.deepEqual(calls, ['archive']);
+  assert.deepEqual(restored.payload.warnings, []);
+});
+
+/** 把回收站条目 meta.json 里的 sessionDir 改成指定值（模拟宿主自定义根目录下删除的会话）。 */
+function setRecordedDir(home, entry, dir) {
+  const file = path.join(home, 'trash', entry, MAIN, 'meta.json');
+  const meta = JSON.parse(fs.readFileSync(file, 'utf8'));
+  fs.writeFileSync(file, JSON.stringify({ ...meta, sessionDir: dir }), 'utf8');
+}
+
+test('还原：宿主定位到自定义根目录，且与 meta.sessionDir 完全相同，也能还原', async () => {
+  const home = fixture();
+  const custom = path.join(home, 'custom-root', SLUG, MAIN);
+  const persistence = { locate: () => ({ kind: 'jsonl', path: path.join(custom, 'session.v4.jsonl.zstd') }) };
+  const routes = await boot({ sessionPersistence: persistence });
+  const del = await call(routes, '/delete', { sessionId: MAIN });
+  assert.equal(del.payload.ok, true);
+  setRecordedDir(home, del.payload.entry, custom);
+  const restored = await call(routes, '/restore', { entry: del.payload.entry, sessionId: MAIN });
+  assert.equal(restored.payload.ok, true, JSON.stringify(restored.payload));
+  assert.equal(restored.payload.targetSource, 'persistence');
+  assert.equal(fs.existsSync(path.join(custom, 'session.v4.jsonl.zstd')), true);
+});
+
+test('还原：宿主无法定位时，回退到的 meta.sessionDir 仍做根目录校验', async () => {
+  const home = fixture();
+  const outside = path.join(home, 'custom-root', SLUG, MAIN);
+  for (const services of [{}, { sessionPersistence: { locate: () => { throw new Error('locate failed'); } } }]) {
+    const routes = await boot(services);
+    const del = await call(routes, '/delete', { sessionId: MAIN });
+    assert.equal(del.payload.ok, true);
+    setRecordedDir(home, del.payload.entry, outside);
+    const restored = await call(routes, '/restore', { entry: del.payload.entry, sessionId: MAIN });
+    assert.equal(restored.payload.ok, false);
+    assert.equal(restored.payload.code, 'invalid-target');
+    assert.equal(fs.existsSync(outside), false);
+    // 改回合法记录值，把会话还原回去，供下一轮使用
+    setRecordedDir(home, del.payload.entry, path.join(home, 'sessions', SLUG, MAIN));
+    const back = await call(routes, '/restore', { entry: del.payload.entry, sessionId: MAIN });
+    assert.equal(back.payload.ok, true, JSON.stringify(back.payload));
+  }
+});
+
+test('孤儿清理：宿主缺少 unpinSession 且读不到置顶集合时，按失败上报', async () => {
+  const getters = {
+    missing: {},
+    throws: { get pinnedSessionIds() { throw new Error('not ready'); } },
+    notArray: { pinnedSessionIds: 'oops' },
+  };
+  for (const [name, extra] of Object.entries(getters)) {
+    const home = fixture();
+    fs.rmSync(path.join(home, 'sessions', SLUG, MAIN), { recursive: true });
+    const registry = Object.defineProperties(
+      { list: () => [{ async detachSession() {} }], async unarchiveSession() {} },
+      Object.getOwnPropertyDescriptors(extra),
+    );
+    const routes = await boot({ workspaceRegistry: registry });
+    const result = await call(routes, '/clean-orphans', {});
+    assert.equal(result.payload.ok, false, name);
+    assert.equal(result.payload.code, 'partial', name);
+    assert.deepEqual(result.payload.failed, [MAIN], name);
+    // 没有越过宿主直接改登记文件：孤儿登记仍在，下一次清理还能看到它
+    const state = await call(routes, '/state', {});
+    assert.ok(state.payload.orphans.registryOnly.includes(MAIN), name);
+  }
+});

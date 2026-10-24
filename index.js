@@ -344,11 +344,31 @@ async function forget(ctx, sessionId) {
       result.warnings.push(`移除工作区登记失败：${String(error?.message ?? error)}`);
     }
   }
-  for (const [key, method] of [['unarchived', 'unarchiveSession'], ['unpinned', 'unpinSession']]) {
+  for (const [key, method, getter] of [
+    ['unarchived', 'unarchiveSession', 'archivedSessionIds'],
+    ['unpinned', 'unpinSession', 'pinnedSessionIds'],
+  ]) {
     try {
       if (typeof registry?.[method] === 'function') {
         await registry[method](sessionId);
         result[key] = true;
+      } else if (registry !== void 0) {
+        // 宿主没有这个方法：只有「读到了集合且确认不含该 id」才算清理成功。
+        // 读不到（getter 缺失、抛错、非数组）是「无法确认」，必须按失败上报，不能当成没有残留。
+        // result[key] 的含义是「已确认没有残留该标记」，而不是「调用过该方法」。
+        let ids;
+        try {
+          ids = registry[getter];
+        } catch {
+          ids = void 0;
+        }
+        if (!Array.isArray(ids)) {
+          result.warnings.push(`宿主未提供 ${method}，且无法读取 ${getter}，无法确认标记已清理`);
+        } else if (ids.includes(sessionId)) {
+          result.warnings.push(`宿主未提供 ${method}，${getter} 里的标记未清理`);
+        } else {
+          result[key] = true;
+        }
       }
     } catch (error) {
       result.warnings.push(`清理 ${method} 标记失败：${String(error?.message ?? error)}`);
@@ -449,6 +469,8 @@ async function admitRestored(ctx, sessionId, meta) {
     return { viaService: true, registered: false, warnings };
   }
   try {
+    // 归档与置顶在宿主里互斥：archiveSession 会把 id 移出置顶集合，pinSession 拒绝已归档的会话
+    // （WorkspaceArchivedSessionPinError）。所以这里是 else-if，而不是两个都恢复。
     if (meta?.archived === true && typeof registry.archiveSession === 'function') {
       await registry.archiveSession(sessionId);
     } else if (meta?.pinned === true && typeof registry.pinSession === 'function') {
@@ -563,7 +585,7 @@ function registerRoutes(webServer, fiber, ctx) {
         stripRegistry: !hasRegistry,
       });
       if (result.ok === true) {
-        // 批量场景下每条都要等：非 live 的会话只复查一轮，避免几百条时请求超时
+        // live 过的会话复查 3 轮；没 live 过的不会有 dispose 回写，跳过复查，避免几百条时请求超时
         await sweepReappearedCache(result.entry, sessionId, quiesced.live === true ? 3 : 0);
         const forgotten = await forget(ctx, sessionId);
         warnings.push(...forgotten.warnings.map((warning) => `${sessionId}：${warning}`));
@@ -607,6 +629,8 @@ function registerRoutes(webServer, fiber, ctx) {
     // 传字符串 id 会让客户端 sessions.handleSessionAdded 拿到错误类型。
     const result = await restoreFromTrash(entry, sessionId, {
       sessionDir: target.dir,
+      // 只有宿主 sessionPersistence.locate() 给出的路径才免于根目录校验；记录值必须校验
+      targetTrusted: target.source === 'persistence',
       onRestored: (id, meta) => admitRestored(ctx, id, meta),
     });
     if (result.ok !== true) return result;
